@@ -1,0 +1,22 @@
+{
+  "rules": {
+    "accounts": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "$accountId": {
+        ".indexOn": ["active", "usedBytes", "addedAt"]
+      }
+    },
+    "routes": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "$encodedKey": {
+        ".indexOn": ["accountId", "bucket", "uploadedAt"]
+      }
+    },
+    "instances": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    }
+  }
+}
