@@ -96,13 +96,11 @@ async function testListen() {
     listener = rtdbListen(
       '/test/listen',
       (eventType, data) => {
-        // 'put' with path '/' is the initial sync event from Firebase
         if (!received && eventType === 'put') {
           received = true
           clearTimeout(timeout)
           listener?.close()
           ok('rtdbListen nhận event trong 3s')
-          // Cleanup test node (fire and forget)
           rtdbDelete('/test/listen').catch(() => {})
           resolve()
         }
@@ -115,13 +113,11 @@ async function testListen() {
       }
     )
 
-    // Trigger a write so listener fires (write after short delay to let SSE connect)
     sleep(500).then(() => rtdbSet('/test/listen', { ts: Date.now() })).catch(() => {})
   })
 }
 
 async function testBatchPatch() {
-  // Build 500 entries — should auto-chunk into 2 batches (default RTDB_SYNC_BATCH_SIZE=400)
   const updates = {}
   for (let i = 0; i < 500; i++) {
     updates[`/test/batch/item${i}`] = { idx: i, ts: Date.now() }
@@ -129,7 +125,6 @@ async function testBatchPatch() {
 
   await rtdbBatchPatch(updates)
 
-  // Spot-check a few entries
   const sample = await rtdbGet('/test/batch/item0')
   const sampleLast = await rtdbGet('/test/batch/item499')
 
@@ -141,7 +136,6 @@ async function testBatchPatch() {
     ))
   }
 
-  // Cleanup
   await rtdbDelete('/test/batch').catch(() => {})
 }
 

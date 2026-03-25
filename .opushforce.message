@@ -1,9 +1,7 @@
-[2025-03-25 10:00] (feat): T2 - Firebase RTDB Layer hoàn thành
+[2025-03-25 11:00] (feat): T3 - Storage Layer hoàn thành
 
-- Tạo src/firebase.js với 7 hàm export: rtdbGet, rtdbSet, rtdbPatch, rtdbDelete, rtdbPush, rtdbListen, rtdbBatchPatch
-- Dùng fetch thuần (REST API) + eventsource (SSE) — không dùng firebase-admin SDK
-- rtdbBatchPatch tự động chunk theo RTDB_SYNC_BATCH_SIZE (default 400)
-- rtdbListen trả { close() } để dừng SSE connection
-- Tạo database.rules.json với indexes trên active/usedBytes/addedAt/accountId/bucket/uploadedAt
-- Tạo test/firebase.test.js với 6 test case theo spec T2
-- Scaffold đầy đủ project: package.json, config.js, .env.example, .gitignore, Dockerfile, docker-compose.yml
+- Tạo src/db.js: SQLite init WAL mode, migrations idempotent, 11 hàm export (accounts + routes + multipart)
+- Tạo src/cache.js: LRU wrapper với cacheGet/cacheSet/cacheDelete/cacheClear/cacheSize
+- Tạo src/accountPool.js: selectAccountForUpload (threshold + excludeIds), recordUpload, recordDelete, reloadAccountsFromRTDB, StorageFullError, getAccountsStats, getAccount
+- Tạo src/quotaPoller.js: background poller ListObjectsV2 phân trang, 5% threshold, never crash, startQuotaPoller/stopQuotaPoller
+- Tạo test/storage.test.js: 8 test cases theo checklist T3
