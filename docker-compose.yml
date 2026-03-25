@@ -1,0 +1,40 @@
+version: '3.9'
+
+x-proxy-common: &proxy-common
+  build: .
+  restart: unless-stopped
+  env_file: .env
+  volumes:
+    - proxy-data:/app/data   # shared SQLite volume across replicas (WAL mode supports concurrent access)
+  networks:
+    - proxy-net
+
+services:
+  proxy-1:
+    <<: *proxy-common
+    environment:
+      INSTANCE_ID: proxy-1
+    ports:
+      - "3001:3000"
+
+  proxy-2:
+    <<: *proxy-common
+    environment:
+      INSTANCE_ID: proxy-2
+    ports:
+      - "3002:3000"
+
+  proxy-3:
+    <<: *proxy-common
+    environment:
+      INSTANCE_ID: proxy-3
+    ports:
+      - "3003:3000"
+
+volumes:
+  proxy-data:
+    driver: local
+
+networks:
+  proxy-net:
+    driver: bridge

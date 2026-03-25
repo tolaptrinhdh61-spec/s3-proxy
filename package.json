@@ -1,15 +1,28 @@
 {
   "name": "s3-proxy",
   "version": "1.0.0",
-  "main": "index.js",
-  "directories": {
-    "doc": "docs"
+  "description": "S3-compatible multi-account proxy with Firebase RTDB sync",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": ""
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/signature-v4": "^3",
+    "@smithy/protocol-http": "^3",
+    "@fastify/close-grace": "^1",
+    "@fastify/rate-limit": "^9",
+    "better-sqlite3": "^9",
+    "eventsource": "^2",
+    "fastify": "^4",
+    "lru-cache": "^10",
+    "pino": "^8",
+    "pino-pretty": "^11",
+    "prom-client": "^15",
+    "undici": "^6"
+  }
 }
