@@ -304,6 +304,8 @@ Write `/accounts/{accountId}` like:
   "endpoint": "https://project.supabase.co/storage/v1/s3",
   "region": "ap-southeast-1",
   "bucket": "physical-backend-bucket",
+  "addressingStyle": "path",
+  "payloadSigningMode": "unsigned",
   "quotaBytes": 5368709120,
   "usedBytes": 0,
   "active": true,
@@ -339,6 +341,8 @@ Single account:
   "endpoint": "https://project.supabase.co/storage/v1/s3",
   "region": "ap-southeast-1",
   "bucket": "physical-backend-bucket",
+  "addressingStyle": "path",
+  "payloadSigningMode": "unsigned",
   "quotaBytes": 5368709120,
   "usedBytes": 0,
   "active": true
@@ -356,7 +360,9 @@ Bulk import as array:
       "secretAccessKey": "secret-02",
       "endpoint": "https://project-02.supabase.co/storage/v1/s3",
       "region": "ap-southeast-1",
-      "bucket": "bucket-02"
+      "bucket": "bucket-02",
+      "addressingStyle": "path",
+      "payloadSigningMode": "unsigned"
     },
     {
       "accountId": "acc03",
@@ -364,7 +370,9 @@ Bulk import as array:
       "secretAccessKey": "secret-03",
       "endpoint": "https://project-03.supabase.co/storage/v1/s3",
       "region": "ap-southeast-1",
-      "bucket": "bucket-03"
+      "bucket": "bucket-03",
+      "addressingStyle": "virtual",
+      "payloadSigningMode": "signed"
     }
   ]
 }

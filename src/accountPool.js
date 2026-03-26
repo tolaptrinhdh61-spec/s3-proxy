@@ -119,6 +119,8 @@ export async function reloadAccountsFromRTDB() {
           endpoint: data.endpoint,
           region: data.region,
           bucket: data.bucket,
+          addressing_style: data.addressingStyle ?? data.addressing_style ?? 'path',
+          payload_signing_mode: data.payloadSigningMode ?? data.payload_signing_mode ?? 'unsigned',
           quota_bytes: data.quotaBytes ?? 5_368_709_120,
           used_bytes: data.usedBytes ?? 0,
           active: data.active ? 1 : 0,

@@ -90,6 +90,40 @@ async function testResignRequest() {
   }
 }
 
+async function testResignRequestVirtualHostedStyle() {
+  try {
+    const { resignRequest } = await import('../src/utils/sigv4.js')
+
+    const account = {
+      access_key_id: 'AKIATESTKEY123',
+      secret_key: 'testSecretKey456abcdef',
+      endpoint: 'https://s3.amazonaws.com',
+      region: 'us-east-1',
+      bucket: 'ignored-bucket-field',
+      addressing_style: 'virtual',
+    }
+
+    const { url, headers } = await resignRequest({
+      account,
+      method: 'GET',
+      path: '/mybucket/folder/object.txt',
+      headers: {},
+    })
+
+    if (!url.startsWith('https://mybucket.s3.amazonaws.com/')) {
+      throw new Error(`Virtual-hosted URL wrong: ${url}`)
+    }
+
+    if (headers.host !== 'mybucket.s3.amazonaws.com') {
+      throw new Error(`Virtual-hosted host wrong: ${headers.host}`)
+    }
+
+    ok('resignRequest ho tro virtual-hosted style cho endpoint S3-compatible')
+  } catch (err) {
+    fail('resignRequest virtual-hosted style', err)
+  }
+}
+
 // ─── Test: withRetry success after 2 fails ───────────────────────────────────
 
 async function testWithRetryPass() {
@@ -197,6 +231,7 @@ async function main() {
   console.log('─'.repeat(60))
 
   await testResignRequest()
+  await testResignRequestVirtualHostedStyle()
   await testWithRetryPass()
   await testWithRetryNo4xx()
   await testBuildErrorXml()

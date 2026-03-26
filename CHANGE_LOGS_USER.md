@@ -1,3 +1,11 @@
+## [2026-03-26 16:10] — Bổ sung tương thích nhiều S3-compatible endpoint
+
+**Yêu cầu gốc của user:** kiểm tra bug tổng thể và bổ sung để dùng tốt với nhiều S3-compatible endpoint  
+**Kết quả thực hiện:** thêm cấu hình theo từng account gồm `addressingStyle` (path/virtual) và `payloadSigningMode` (unsigned/signed), cập nhật luồng ký SigV4 để hỗ trợ virtual-hosted style + chế độ ký payload strict, đồng thời sửa bug validate import accounts để dữ liệu lỗi không làm ảnh hưởng xử lý các record còn lại; đã cập nhật test và tài liệu tương ứng.  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 14:30] — PocketBase không kết nối được S3 proxy
 
 **Yêu cầu gốc của user:** PocketBase báo lỗi "Failed to establish S3 connection" và log cho thấy 403 AccessDenied khi test S3 từ Settings  

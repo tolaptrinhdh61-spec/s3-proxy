@@ -1,5 +1,6 @@
-[2026-03-26 14:45] (fix): them ignoreTrailingSlash de PocketBase LIST bucket duoc
+[2026-03-26 16:10] (fix): bo sung tuong thich da nha cung cap S3-compatible theo tung account
 
-- sua src/plugins/auth.js de extract Access Key ID tu AWS4-HMAC-SHA256 Credential=<key>/...
-- giu nguyen ho tro x-api-key va Bearer token nhu cu
-- fix loi 403 AccessDenied khi PocketBase ket noi S3 proxy
+- them addressingStyle (path|virtual) va payloadSigningMode (unsigned|signed) cho tung account
+- cap nhat SigV4 de ho tro virtual-hosted style va tuy chon ky payload strict
+- sua validation import accounts de 1 record loi khong gay skip sai cac record con lai
+- da bo sung test cho virtual-hosted signing va import accounts voi field moi

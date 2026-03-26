@@ -1,3 +1,20 @@
+## [2026-03-26 16:10] — Per-account S3 compatibility + fix import validation
+
+**Loại:** fix/feat  
+**Tóm tắt yêu cầu:** kiểm tra tổng thể bug và tăng tính khả thi với nhiều S3-compatible endpoint  
+**Nội dung thay đổi:**
+
+- File `src/db.js`: mở rộng schema accounts với `addressing_style` (default `path`) và `payload_signing_mode` (default `unsigned`), kèm migration idempotent và upsert.
+- File `src/routes/accounts.js`: parse/validate 2 field mới, trả về trong API response/RTDB document; sửa bug validate theo từng entry (`errorCountBefore`) để tránh skip sai hàng hợp lệ.
+- File `src/accountPool.js`: reload account từ RTDB có đọc `addressingStyle` và `payloadSigningMode`.
+- File `src/utils/sigv4.js`: hỗ trợ ký request theo `virtual-hosted` style (bucket ở host) khi cần, và cho phép chọn ký payload strict (`signed`) thay vì luôn `UNSIGNED-PAYLOAD`.
+- File `test/utils.test.js`, `test/accounts-api.test.js`: bổ sung test cho virtual-hosted signing, field mới và case payload invalid.
+- File `README.md`: cập nhật ví dụ account payload với các field tương thích mới.
+
+**Ghi chú kỹ thuật:** thay đổi này giúp proxy linh hoạt hơn khi làm việc đồng thời với nhiều nhà cung cấp S3-compatible có yêu cầu khác nhau về addressing style và payload signing.
+
+---
+
 ## [2026-03-26 14:45] — Fix trailing slash bucket URL cho PocketBase
 
 **Loại:** fix  

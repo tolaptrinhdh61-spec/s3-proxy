@@ -51,6 +51,22 @@ function normalizeBoolean(value, fallback = true) {
   return fallback
 }
 
+function normalizeAddressingStyle(value) {
+  const raw = normalizeString(value).toLowerCase()
+  if (!raw) return 'path'
+  if (['path', 'path-style', 'path_style'].includes(raw)) return 'path'
+  if (['virtual', 'virtual-hosted', 'virtual_hosted', 'virtual-hosted-style'].includes(raw)) return 'virtual'
+  return ''
+}
+
+function normalizePayloadSigningMode(value) {
+  const raw = normalizeString(value).toLowerCase()
+  if (!raw) return 'unsigned'
+  if (['unsigned', 'unsigned-payload', 'unsigned_payload'].includes(raw)) return 'unsigned'
+  if (['signed', 'strict', 'required'].includes(raw)) return 'signed'
+  return ''
+}
+
 function looksLikeSingleAccountDocument(value) {
   if (!isPlainObject(value)) return false
   return ['accountId', 'account_id', 'accessKeyId', 'access_key_id', 'secretAccessKey', 'secret_key', 'endpoint', 'bucket']
@@ -96,6 +112,8 @@ function toRtdbAccountDocument(account) {
     endpoint: account.endpoint,
     region: account.region,
     bucket: account.bucket,
+    addressingStyle: account.addressing_style ?? 'path',
+    payloadSigningMode: account.payload_signing_mode ?? 'unsigned',
     quotaBytes: account.quota_bytes,
     usedBytes: account.used_bytes,
     active: account.active === 1,
@@ -110,6 +128,8 @@ function toPublicAccount(account, action = null) {
     endpoint: account.endpoint,
     region: account.region,
     bucket: account.bucket,
+    addressingStyle: account.addressing_style ?? 'path',
+    payloadSigningMode: account.payload_signing_mode ?? 'unsigned',
     quotaBytes: account.quota_bytes,
     usedBytes: account.used_bytes,
     active: account.active === 1 || account.active === true,
@@ -138,6 +158,8 @@ function normalizeAccountEntries(payload) {
   const resultAccounts = []
 
   for (const { entry, fallbackId, sourceLabel } of entries) {
+    const errorCountBefore = errors.length
+
     if (!isPlainObject(entry)) {
       errors.push(`${sourceLabel} must be an object`)
       continue
@@ -149,6 +171,8 @@ function normalizeAccountEntries(payload) {
     const endpoint = normalizeString(entry.endpoint)
     const region = normalizeString(entry.region)
     const bucket = normalizeString(entry.bucket)
+    const addressingStyle = normalizeAddressingStyle(entry.addressingStyle ?? entry.addressing_style)
+    const payloadSigningMode = normalizePayloadSigningMode(entry.payloadSigningMode ?? entry.payload_signing_mode)
 
     if (!accountId) errors.push(`${sourceLabel}.accountId is required`)
     if (!accessKeyId) errors.push(`${sourceLabel}.accessKeyId is required`)
@@ -156,6 +180,8 @@ function normalizeAccountEntries(payload) {
     if (!endpoint) errors.push(`${sourceLabel}.endpoint is required`)
     if (!region) errors.push(`${sourceLabel}.region is required`)
     if (!bucket) errors.push(`${sourceLabel}.bucket is required`)
+    if (!addressingStyle) errors.push(`${sourceLabel}.addressingStyle must be one of: path, virtual`)
+    if (!payloadSigningMode) errors.push(`${sourceLabel}.payloadSigningMode must be one of: unsigned, signed`)
 
     if (accountId) {
       if (seenIds.has(accountId)) {
@@ -180,7 +206,7 @@ function normalizeAccountEntries(payload) {
     const addedAt = normalizeNonNegativeInteger(entry.addedAt ?? entry.added_at, Date.now(), 'addedAt', errors, sourceLabel)
     const active = normalizeBoolean(entry.active, true) ? 1 : 0
 
-    if (errors.length > 0) {
+    if (errors.length > errorCountBefore) {
       continue
     }
 
@@ -192,6 +218,8 @@ function normalizeAccountEntries(payload) {
       endpoint,
       region,
       bucket,
+      addressing_style: addressingStyle,
+      payload_signing_mode: payloadSigningMode,
       quota_bytes: quotaBytes,
       used_bytes: usedBytes,
       active,

@@ -215,6 +215,8 @@ async function testSingleAccountImport(fastify) {
         endpoint: 'https://project-01.supabase.co/storage/v1/s3',
         region: 'ap-southeast-1',
         bucket: 'bucket-01',
+        addressingStyle: 'virtual',
+        payloadSigningMode: 'signed',
       },
     })
 
@@ -225,7 +227,11 @@ async function testSingleAccountImport(fastify) {
     assert(body.accounts[0].accountId === 'acc01', `single import accountId=${body.accounts[0].accountId}`)
     assert(body.accounts[0].action === 'created', `single import action=${body.accounts[0].action}`)
     assert(body.accounts[0].hasSecret === true, `single import hasSecret=${body.accounts[0].hasSecret}`)
+    assert(body.accounts[0].addressingStyle === 'virtual', `single import addressingStyle=${body.accounts[0].addressingStyle}`)
+    assert(body.accounts[0].payloadSigningMode === 'signed', `single import payloadSigningMode=${body.accounts[0].payloadSigningMode}`)
     assert(!('secretAccessKey' in body.accounts[0]), 'single import response leaked secretAccessKey')
+    assert(fakeRtdb.state.accounts.acc01?.addressingStyle === 'virtual', 'single import missing addressingStyle in fake RTDB')
+    assert(fakeRtdb.state.accounts.acc01?.payloadSigningMode === 'signed', 'single import missing payloadSigningMode in fake RTDB')
     assert(fakeRtdb.state.accounts.acc01?.bucket === 'bucket-01', 'single import missing in fake RTDB')
     ok('POST /admin/accounts -> import 1 account vao SQLite + RTDB va khong tra ve secret')
   } catch (err) {
@@ -339,6 +345,14 @@ async function testInvalidImportValidation(fastify) {
             accountId: 'broken',
             accessKeyId: 'broken-key',
             secretAccessKey: 'broken-secret',
+          },
+          {
+            accountId: 'good-after-bad',
+            accessKeyId: 'good-key',
+            secretAccessKey: 'good-secret',
+            endpoint: 'https://good.supabase.co/storage/v1/s3',
+            region: 'ap-southeast-1',
+            bucket: 'good-bucket',
           },
         ],
       },

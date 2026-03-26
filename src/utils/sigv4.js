@@ -40,6 +40,50 @@ function joinEndpointPath(basePath = '/', requestPath = '/') {
   return `${normalizedBase}${normalizedRequest}`
 }
 
+function buildUpstreamTarget(account, path) {
+  const endpointUrl = new URL(account.endpoint)
+  const signedPath = joinEndpointPath(endpointUrl.pathname, path)
+  const addressingStyle = String(account.addressing_style ?? 'path').toLowerCase()
+
+  if (addressingStyle !== 'virtual') {
+    return {
+      endpointUrl,
+      hostname: endpointUrl.hostname,
+      path: signedPath,
+    }
+  }
+
+  const segments = signedPath.split('/').filter(Boolean)
+  const prefixSegments = endpointUrl.pathname.split('/').filter(Boolean)
+
+  if (segments.length <= prefixSegments.length) {
+    return {
+      endpointUrl,
+      hostname: endpointUrl.hostname,
+      path: signedPath,
+    }
+  }
+
+  const bucketSegmentIndex = prefixSegments.length
+  const bucket = segments[bucketSegmentIndex]
+  if (!bucket) {
+    return {
+      endpointUrl,
+      hostname: endpointUrl.hostname,
+      path: signedPath,
+    }
+  }
+
+  const objectSegments = segments.slice(bucketSegmentIndex + 1)
+  const virtualPath = `${endpointUrl.pathname.replace(/\/+$/, '')}/${objectSegments.join('/')}` || '/'
+
+  return {
+    endpointUrl,
+    hostname: `${bucket}.${endpointUrl.hostname}`,
+    path: virtualPath.startsWith('/') ? virtualPath : `/${virtualPath}`,
+  }
+}
+
 /**
  * Re-sign an S3 request for a specific account.
  *
@@ -53,9 +97,10 @@ function joinEndpointPath(basePath = '/', requestPath = '/') {
  * @returns {Promise<{ url: string, headers: object }>}
  */
 export async function resignRequest({ account, method, path, query = {}, headers = {}, body = null }) {
-  // Parse endpoint to get hostname
-  const endpointUrl = new URL(account.endpoint)
-  const signedPath = joinEndpointPath(endpointUrl.pathname, path)
+  const target = buildUpstreamTarget(account, path)
+  const endpointUrl = target.endpointUrl
+  const signedPath = target.path
+  const host = endpointUrl.port ? `${target.hostname}:${endpointUrl.port}` : target.hostname
 
   // Build clean headers (strip AWS auth headers, keep relevant ones)
   const cleanHeaders = {}
@@ -65,7 +110,7 @@ export async function resignRequest({ account, method, path, query = {}, headers
       cleanHeaders[lower] = v
     }
   }
-  cleanHeaders['host'] = endpointUrl.host
+  cleanHeaders['host'] = host
 
   // Build query string
   const queryParams = {}
@@ -77,7 +122,7 @@ export async function resignRequest({ account, method, path, query = {}, headers
   const httpRequest = new HttpRequest({
     method: method.toUpperCase(),
     protocol: endpointUrl.protocol,
-    hostname: endpointUrl.hostname,
+    hostname: target.hostname,
     port: endpointUrl.port ? parseInt(endpointUrl.port, 10) : undefined,
     path: signedPath,
     query: queryParams,
@@ -103,7 +148,7 @@ export async function resignRequest({ account, method, path, query = {}, headers
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&')
 
-  const url = `${endpointUrl.protocol}//${endpointUrl.host}${signedPath}${queryStr ? '?' + queryStr : ''}`
+  const url = `${endpointUrl.protocol}//${host}${signedPath}${queryStr ? '?' + queryStr : ''}`
 
   return { url, headers: signed.headers }
 }
@@ -126,7 +171,12 @@ export async function proxyRequest({ account, method, path, query = {}, headers 
   const headersForSign = { ...headers }
 
   // Use unsigned payload for streaming PUTs to avoid buffering
-  if (bodyStream && (method === 'PUT' || method === 'POST')) {
+  const payloadSigningMode = String(account.payload_signing_mode ?? 'unsigned').toLowerCase()
+  const useUnsignedPayload = payloadSigningMode !== 'signed'
+    && bodyStream
+    && (method === 'PUT' || method === 'POST')
+
+  if (useUnsignedPayload) {
     headersForSign['x-amz-content-sha256'] = 'UNSIGNED-PAYLOAD'
   }
 
@@ -140,7 +190,7 @@ export async function proxyRequest({ account, method, path, query = {}, headers 
   })
 
   // Override with unsigned payload header if streaming
-  if (bodyStream && (method === 'PUT' || method === 'POST')) {
+  if (useUnsignedPayload) {
     signedHeaders['x-amz-content-sha256'] = 'UNSIGNED-PAYLOAD'
   }
 
