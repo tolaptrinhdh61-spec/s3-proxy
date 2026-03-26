@@ -1,269 +1,374 @@
 # s3-proxy
 
-S3-compatible multi-account proxy with Firebase RTDB sync. Pools 20+ Supabase S3 accounts behind one endpoint, distributes uploads across accounts by quota, and syncs routing table bidirectionally via Firebase RTDB for multi-instance HA.
+S3-compatible multi-account proxy for PocketBase and other S3 clients.
+
+The proxy exposes one logical S3 endpoint while spreading object storage across multiple backend S3-compatible accounts. Object routing, bucket visibility, delete safety, and reconciliation are controlled by metadata in SQLite and replicated through Firebase RTDB.
 
 ---
 
-## Architecture
+## Architecture Overview
 
+```text
+Client / PocketBase
+        |
+        | path-style S3 API
+        v
++------------------------------+
+| Fastify S3 Proxy             |
+| PUT/GET/HEAD/DELETE/LIST     |
+| auth, metrics, health        |
++---------------+--------------+
+                |
+                | local control plane
+                v
++------------------------------+
+| SQLite (routes + accounts)   |
+| - logical object metadata    |
+| - tombstones                 |
+| - pending RTDB sync state    |
+| - reconciliation markers     |
++---------------+--------------+
+                |
+                | replication / backfill
+                v
++------------------------------+
+| Firebase RTDB                |
+| /accounts /routes /instances |
++---------------+--------------+
+                |
+                | signed upstream requests
+                v
++------------------------------+
+| Backend S3 accounts          |
+| acc-1, acc-2, acc-3 ...      |
++------------------------------+
 ```
-                        ┌──────────────────────────────────┐
-                        │         Firebase RTDB             │
-                        │  /accounts  /routes  /instances  │
-                        └──────┬───────────────┬───────────┘
-                   SSE listen  │               │  SSE listen
-                               ▼               ▼
-┌──────────┐   x-api-key  ┌─────────┐   ┌─────────┐   ┌─────────┐
-│PocketBase│─────────────▶│ proxy-1 │   │ proxy-2 │   │ proxy-3 │
-│  Client  │              │ :3001   │   │ :3002   │   │ :3003   │
-└──────────┘              └────┬────┘   └────┬────┘   └────┬────┘
-                               │             │             │
-                    shared SQLite volume (WAL mode, Docker)
-                               │             │             │
-                        ┌──────▼─────────────▼─────────────▼──────┐
-                        │           Supabase S3 Accounts            │
-                        │  acc-1  acc-2  acc-3  ...  acc-20+       │
-                        └──────────────────────────────────────────┘
-```
 
-**Upload flow:** Client PUT → proxy selects least-used account under 90% quota → streams body directly to Supabase → saves route to SQLite + RTDB → other instances receive route via SSE listener.
+### Logical bucket model
 
-**Download flow:** Client GET → lookup cache → SQLite → RTDB fallback → proxy re-signs request → streams Supabase response directly to client.
+The proxy now treats metadata as the authoritative logical control plane.
+
+- SQLite is the primary local source for object routing and logical bucket state.
+- Firebase RTDB is the replication and backfill layer across proxy instances.
+- Backend buckets are physical storage targets, not the source of truth for LIST semantics.
+- New uploads are stored under a namespaced backend key: `<logical-bucket>/<object-key>`.
+- Existing rows from older deployments are migrated in place and keep their legacy `backend_key` when present.
+
+### Unified metadata table tradeoff
+
+The existing `routes` table was expanded into a unified object metadata table instead of splitting routing and listing into separate tables.
+
+This keeps lookup, list, tombstone, and reconciliation state in one indexed row per logical object, which reduces cross-table coordination in request paths and in RTDB replication. The tradeoff is a wider row, but it keeps the write path transactional and easier to reason about during recovery.
 
 ---
 
-## Quick Start — Standalone Node
+## Request Flows
+
+### PUT object
+
+1. Resolve target account.
+   Existing logical objects stay on their current account when possible.
+   New logical objects choose the least-used active account below `QUOTA_THRESHOLD`.
+2. Stream the body directly to the backend account.
+3. After upstream success, commit metadata in SQLite transactionally.
+   This updates the logical row, metadata version, local account usage, and tombstone state if the object was being recreated.
+4. Update cache and in-memory account state.
+5. Attempt RTDB sync.
+   If RTDB sync fails, the row remains `PENDING_SYNC` and the background flusher retries later.
+
+### GET / HEAD object
+
+1. Resolve metadata from cache, then SQLite, then RTDB backfill.
+2. Route to the backend account from metadata only.
+3. Stream the backend response to the client.
+4. If metadata says the object exists but the backend returns `404`, mark the row `MISSING_BACKEND`, emit metrics/logs, and stop serving it as visible logical state.
+
+### DELETE object
+
+1. Resolve metadata from cache/SQLite/RTDB.
+2. Transition the row to `DELETING` locally.
+3. Delete the backend object.
+4. Finalize a tombstone row (`DELETED`) only after backend delete succeeds or backend absence is confirmed.
+5. Update local usage, cache, and RTDB replication state.
+
+Metadata is never deleted first and then applied to the backend later.
+
+### LIST bucket (`ListObjectsV2`)
+
+Bucket listing is fully metadata-backed.
+
+Supported parameters:
+
+- `prefix`
+- `delimiter`
+- `max-keys`
+- `continuation-token`
+- `start-after`
+
+Behavior:
+
+- only `ACTIVE` rows are visible
+- tombstones and inconsistent rows are hidden
+- continuation tokens are opaque base64url-encoded metadata cursors
+- `CommonPrefixes` are generated from metadata, not from a passthrough backend bucket scan
+
+### Bucket create / delete
+
+Logical bucket create is a metadata-level no-op success.
+Logical bucket delete returns `409 BucketNotEmpty` while active logical objects still exist.
+
+---
+
+## Metadata Model
+
+SQLite `routes` rows now include logical object control-plane fields equivalent to:
+
+- `encoded_key`
+- `bucket`
+- `object_key`
+- `backend_key`
+- `account_id`
+- `size_bytes`
+- `etag`
+- `last_modified`
+- `content_type`
+- `uploaded_at`
+- `updated_at`
+- `deleted_at`
+- `metadata_version`
+- `state`
+- `sync_state`
+- `reconcile_status`
+- `backend_last_seen_at`
+- `backend_missing_since`
+- `last_reconciled_at`
+
+Important states:
+
+- `ACTIVE`: visible logical object
+- `DELETING`: delete in progress, hidden from normal list output
+- `DELETED`: tombstone retained for safe delete semantics and replication
+- `MISSING_BACKEND`: metadata existed but backend object was not found
+- `ORPHANED`: backend object detected without trusted logical metadata
+- `PENDING_SYNC` lives in `sync_state` and means the row still needs RTDB replication
+
+Indexes were added for:
+
+- `(bucket, object_key, state, deleted_at)` for list performance
+- `(account_id, backend_key)` for backend inventory reconciliation
+- `(sync_state, updated_at)` for pending RTDB flushes
+
+---
+
+## SQLite and RTDB Responsibilities
+
+### SQLite
+
+SQLite is the authoritative local control plane.
+
+- request-path reads use SQLite before RTDB
+- PUT/DELETE metadata commits happen in SQLite transactions
+- logical list results come from SQLite only
+- tombstones and reconciliation state live here first
+
+### Firebase RTDB
+
+RTDB is replication, coordination, and backfill.
+
+- other instances receive route/account updates through SSE listeners
+- startup backfills local SQLite from `/accounts` and `/routes`
+- rows that fail RTDB replication stay `PENDING_SYNC` and are retried by the background flusher
+- RTDB is not treated as an optional cache for bucket state anymore
+
+---
+
+## Quota Poller and Reconciler
+
+### Quota poller
+
+`src/quotaPoller.js` now focuses on usage verification only.
+
+- scans backend inventory with the shared scanner
+- compares actual backend bytes with stored `used_bytes`
+- corrects drift when it exceeds `QUOTA_DRIFT_THRESHOLD_RATIO`
+- never crashes the process
+
+### Reconciler
+
+`src/reconciler.js` periodically scans backend inventory and repairs metadata drift.
+
+Detected cases:
+
+- backend object exists but metadata is missing
+- metadata exists but backend object is missing
+- size / ETag / last-modified drift
+- metadata points to the wrong account
+
+Safe remediation rules:
+
+- mark missing backend rows instead of deleting data aggressively
+- keep tombstones for confirmed deletes
+- auto-heal metadata only when the backend object can be mapped safely
+- mark suspicious rows with reconciliation status instead of destroying storage
+- keep pending RTDB sync for repaired rows until replication succeeds
+
+The reconciler is guarded against crashes, uses interval backoff, and keeps per-account scan progress in memory so a failed scan can resume on the next cycle instead of starting over blindly.
+
+---
+
+## PocketBase Integration Notes
+
+PocketBase still talks to one logical S3 endpoint.
+
+Recommended PocketBase S3 settings:
+
+| Field | Value |
+| --- | --- |
+| Endpoint | `http://localhost:3000` |
+| Bucket | your logical proxy bucket |
+| Region | `auto` |
+| Access Key ID | `PROXY_API_KEY` |
+| Secret Key | any non-empty value |
+
+Why adding backend accounts increases capacity:
+
+- new logical uploads can be placed on different backend accounts
+- per-account quota remains independent
+- aggregate proxy capacity grows with the active backend pool
+
+Why metadata-backed list matters for PocketBase:
+
+- bucket listing now reflects logical state across all backend accounts
+- PocketBase sees one coherent bucket instead of whichever backend happened to be queried first
+
+What is still eventually consistent:
+
+- RTDB replication between instances when a local commit succeeds but RTDB is temporarily unavailable
+- reconciliation-based repairs for legacy objects or backend-side drift
+- account `used_bytes` convergence across instances when RTDB account patches are delayed and quota verification has not yet run
+
+---
+
+## Failure Semantics and Recovery
+
+### Backend upload fails before SQLite metadata write
+
+- request fails
+- no metadata row is committed
+- local usage is unchanged
+
+### Backend upload succeeds but SQLite metadata write fails
+
+- request fails
+- proxy attempts a compensating backend delete
+- if rollback delete also fails, the object may remain orphaned on the backend and the failure is logged/alerted
+
+### Backend upload + SQLite write succeed but RTDB sync fails
+
+- request still succeeds locally
+- metadata row remains `PENDING_SYNC`
+- background pending-sync flush retries RTDB replication
+
+### Backend says `404` for a metadata-backed object
+
+- row is marked `MISSING_BACKEND`
+- visibility is removed from normal logical listing
+- metrics/logs are emitted for investigation and later reconciliation
+
+---
+
+## Setup and Run
+
+### Standalone Node
 
 ```bash
-# 1. Install
 pnpm install
-
-# 2. Configure
 cp .env.example .env
-# Edit .env — fill in PROXY_API_KEY, FIREBASE_RTDB_URL, FIREBASE_DB_SECRET
-
-# 3. Add at least one account to Firebase RTDB (see section below)
-
-# 4. Start
 node src/index.js
-# Server listens on http://localhost:3000
 ```
 
-**Verify:**
-```bash
-curl http://localhost:3000/health
-# → {"status":"ok","accounts":{"total":1,"active":1,"full":0},...}
-```
-
----
-
-## Quick Start — Docker Compose
+### Docker Compose
 
 ```bash
-# 1. Configure
-cp .env.example .env
-# Edit .env
-
-# 2. Start 3 replicas
 docker compose up --build
-
-# proxy-1 → http://localhost:3001
-# proxy-2 → http://localhost:3002
-# proxy-3 → http://localhost:3003
-
-# Health check
-curl http://localhost:3001/health
 ```
 
-All 3 instances share one SQLite file via Docker volume (`proxy-data`). WAL mode handles concurrent access safely.
+### Add a backend account in RTDB
+
+Write `/accounts/{accountId}` like:
+
+```json
+{
+  "accessKeyId": "your-access-key",
+  "secretAccessKey": "your-secret-key",
+  "endpoint": "https://project.supabase.co/storage/v1/s3",
+  "region": "ap-southeast-1",
+  "bucket": "physical-backend-bucket",
+  "quotaBytes": 5368709120,
+  "usedBytes": 0,
+  "active": true,
+  "addedAt": 1774490000000
+}
+```
+
+The proxy listens to `/accounts` via RTDB SSE and reloads without restart.
 
 ---
 
 ## Environment Variables
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `PROXY_API_KEY` | ✅ | — | Client auth key (sent as `x-api-key` header) |
-| `FIREBASE_RTDB_URL` | ✅ | — | Firebase RTDB URL e.g. `https://project.firebaseio.com` |
-| `FIREBASE_DB_SECRET` | ✅ | — | Firebase RTDB legacy secret token |
-| `PORT` | | `3000` | HTTP server port |
-| `QUOTA_THRESHOLD` | | `0.90` | Switch account when usage reaches this fraction |
-| `QUOTA_POLL_INTERVAL_MS` | | `300000` | Poll Supabase storage every N ms (5 min) |
-| `RTDB_SYNC_BATCH_SIZE` | | `400` | Max RTDB writes per batch on startup |
-| `DRAIN_TIMEOUT_MS` | | `30000` | Graceful shutdown drain window (ms) |
-| `LOG_LEVEL` | | `info` | Pino log level: trace/debug/info/warn/error/fatal |
-| `WEBHOOK_ALERT_URL` | | `""` | POST webhook on critical errors (optional) |
-| `INSTANCE_ID` | | auto | Auto-generated as `hostname-PID-hex` if not set |
-| `SQLITE_PATH` | | `./data/routes.db` | Path to SQLite database file |
-| `LRU_MAX` | | `10000` | LRU cache max entries |
-| `LRU_TTL_MS` | | `300000` | LRU cache TTL (ms) |
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PORT` | `3000` | HTTP listen port |
+| `PROXY_API_KEY` | required | client auth key (`x-api-key`) |
+| `FIREBASE_RTDB_URL` | required | RTDB base URL |
+| `FIREBASE_DB_SECRET` | required | RTDB secret |
+| `QUOTA_THRESHOLD` | `0.90` | upload placement threshold |
+| `QUOTA_POLL_INTERVAL_MS` | `300000` | quota verification interval |
+| `QUOTA_DRIFT_THRESHOLD_RATIO` | `0.05` | minimum relative drift before quota correction |
+| `RECONCILE_INTERVAL_MS` | `900000` | reconciler loop interval |
+| `INVENTORY_SCAN_PAGE_SIZE` | `500` | backend list page size for quota/reconcile scans |
+| `PENDING_SYNC_BATCH_SIZE` | `200` | number of pending metadata rows flushed to RTDB per pass |
+| `RTDB_SYNC_BATCH_SIZE` | `400` | RTDB batch patch chunk size |
+| `DRAIN_TIMEOUT_MS` | `30000` | shutdown drain window |
+| `LOG_LEVEL` | `info` | pino log level |
+| `WEBHOOK_ALERT_URL` | empty | optional alert webhook |
+| `INSTANCE_ID` | auto | instance ID override |
+| `SQLITE_PATH` | `./data/routes.db` | SQLite file path |
+| `LRU_MAX` | `10000` | metadata cache max entries |
+| `LRU_TTL_MS` | `300000` | metadata cache TTL |
 
 ---
 
-## Adding a Supabase Account
+## Metrics
 
-Add the account object to Firebase RTDB at `/accounts/{accountId}`:
+Prometheus metrics include the existing request/account/cache counters plus new metadata-control-plane metrics:
 
-```json
-{
-  "accounts": {
-    "acc-supabase-01": {
-      "accessKeyId": "your-supabase-access-key",
-      "secretAccessKey": "your-supabase-secret-key",
-      "endpoint": "https://xxxxxxxxxxxx.supabase.co/storage/v1/s3",
-      "region": "ap-southeast-1",
-      "bucket": "my-bucket",
-      "quotaBytes": 5368709120,
-      "usedBytes": 0,
-      "active": true,
-      "addedAt": 1711234567890
-    }
-  }
-}
-```
-
-The proxy detects the change via RTDB SSE listener (debounced 2s) and automatically reloads accounts into memory. No restart required.
-
-**How to find Supabase S3 credentials:**  
-Supabase Dashboard → Project → Settings → Storage → S3 Access Keys
+- `s3proxy_metadata_list_requests_total`
+- `s3proxy_metadata_lookup_duration_seconds`
+- `s3proxy_metadata_commit_failures_total`
+- `s3proxy_reconciler_mismatches_total`
+- `s3proxy_orphan_backend_objects`
+- `s3proxy_missing_backend_objects`
+- `s3proxy_active_logical_objects`
+- `s3proxy_logical_object_bytes`
 
 ---
 
-## PocketBase Integration
-
-PocketBase S3 config (Settings → Files → S3):
-
-| Field | Value |
-|-------|-------|
-| Endpoint | `http://localhost:3000` (or your proxy host) |
-| Bucket | Any name — proxy distributes transparently |
-| Region | `auto` |
-| Access Key ID | Value of `PROXY_API_KEY` |
-| Secret Key | Any non-empty string (proxy ignores it) |
-
-The proxy validates the `x-api-key` header which PocketBase sends as the Access Key ID. The Secret Key field is ignored.
-
----
-
-## API Endpoints
-
-### S3-compatible (require `x-api-key` header)
-
-| Method | Path | Operation |
-|--------|------|-----------|
-| `PUT` | `/:bucket/:key*` | Upload object |
-| `GET` | `/:bucket/:key*` | Download object |
-| `HEAD` | `/:bucket/:key*` | Object metadata |
-| `DELETE` | `/:bucket/:key*` | Delete object |
-| `GET` | `/:bucket` | List objects |
-| `PUT` | `/:bucket` | Create bucket |
-| `DELETE` | `/:bucket` | Delete bucket |
-| `POST` | `/:bucket/:key*?uploads` | Initiate multipart upload |
-| `PUT` | `/:bucket/:key*?uploadId=X&partNumber=N` | Upload part |
-| `POST` | `/:bucket/:key*?uploadId=X` | Complete multipart |
-| `DELETE` | `/:bucket/:key*?uploadId=X` | Abort multipart |
-
-### System (no auth required)
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health status JSON |
-| `GET` | `/metrics` | Prometheus metrics |
-| `OPTIONS` | `/*` | CORS preflight |
-
----
-
-## Health Check Response
-
-```json
-{
-  "status": "ok",
-  "instanceId": "proxy-1",
-  "uptime": 3600.5,
-  "accounts": {
-    "total": 22,
-    "active": 20,
-    "full": 2
-  },
-  "routes": {
-    "sqliteCount": 150000,
-    "cacheSize": 9800
-  },
-  "rtdb": {
-    "connected": true,
-    "listenerActive": true
-  },
-  "quota": {
-    "totalBytes": 107374182400,
-    "usedBytes": 53687091200,
-    "percentUsed": 50.0
-  }
-}
-```
-
-Returns `503` only if both RTDB and SQLite are unreachable simultaneously.
-
----
-
-## Prometheus Metrics
-
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `s3proxy_requests_total` | Counter | `method`, `operation`, `status_code` | Total requests |
-| `s3proxy_upload_bytes_total` | Counter | `account_id` | Bytes uploaded per account |
-| `s3proxy_download_bytes_total` | Counter | `account_id` | Bytes downloaded per account |
-| `s3proxy_account_used_bytes` | Gauge | `account_id` | Current used bytes |
-| `s3proxy_account_quota_bytes` | Gauge | `account_id` | Quota bytes |
-| `s3proxy_rtdb_sync_lag_ms` | Gauge | — | ms since last RTDB event |
-| `s3proxy_cache_hits_total` | Counter | — | LRU cache hits |
-| `s3proxy_cache_misses_total` | Counter | — | LRU cache misses |
-| `s3proxy_retry_total` | Counter | `operation` | Retry attempts |
-| `s3proxy_fallback_total` | Counter | `reason` | Fallback triggers |
-
----
-
-## Graceful Shutdown
+## Health and Validation
 
 ```bash
-kill -SIGTERM <pid>
-# or Ctrl+C (SIGINT)
+curl http://localhost:3000/health
+curl http://localhost:3000/metrics
+npm test
 ```
-
-On shutdown: stops accepting requests → drains in-flight requests (up to `DRAIN_TIMEOUT_MS`) → stops quota poller → closes RTDB listeners → marks instance unhealthy in RTDB → closes SQLite → exits 0.
 
 ---
 
-## Setup Checklist (zero to first request)
+## Rollout Notes
 
-```bash
-# 1. Install Node.js 20+ and pnpm
-npm install -g pnpm
-
-# 2. Clone / extract project
-cd s3-proxy
-pnpm install
-
-# 3. Configure environment
-cp .env.example .env
-# Edit .env: set PROXY_API_KEY, FIREBASE_RTDB_URL, FIREBASE_DB_SECRET
-
-# 4. Add first Supabase account to Firebase RTDB
-# (see "Adding a Supabase Account" section above)
-
-# 5. Start server
-node src/index.js
-
-# 6. Test upload
-curl -X PUT http://localhost:3000/mybucket/hello.txt \
-  -H "x-api-key: your-proxy-api-key" \
-  -H "Content-Type: text/plain" \
-  --data "hello world"
-
-# 7. Test download
-curl http://localhost:3000/mybucket/hello.txt \
-  -H "x-api-key: your-proxy-api-key"
-# → hello world
-
-# 8. Check health
-curl http://localhost:3000/health | jq .
-```
+- Existing SQLite databases are migrated in place on startup.
+- Existing route rows are backfilled with metadata defaults such as `backend_key`, `state`, `sync_state`, and `metadata_version`.
+- New uploads use namespaced backend keys (`<logical-bucket>/<object-key>`).
+- Legacy rows continue to work because migrated records retain or default their stored `backend_key`.
+- If legacy backend objects exist without metadata and cannot be mapped safely, the reconciler marks them as orphaned instead of exposing them as visible logical objects.

@@ -1,13 +1,6 @@
 /**
  * src/utils/s3Xml.js
  * Build S3-compatible XML responses.
- *
- * Exported:
- *   buildErrorXml(code, message, requestId)
- *   buildListBucketResult(bucket, objects, options)
- *   buildInitiateMultipartUploadResult(bucket, key, uploadId)
- *   buildCompleteMultipartUploadResult(bucket, key, location, etag)
- *   buildDeleteObjectsResult(deleted, errors)
  */
 
 const XML_DECLARATION = '<?xml version="1.0" encoding="UTF-8"?>'
@@ -21,13 +14,6 @@ function esc(str) {
     .replace(/'/g, '&apos;')
 }
 
-/**
- * Build S3 error XML.
- * @param {string} code - S3 error code (e.g. 'NoSuchKey')
- * @param {string} message
- * @param {string} requestId
- * @returns {string} XML string
- */
 export function buildErrorXml(code, message, requestId = '') {
   return [
     XML_DECLARATION,
@@ -40,20 +26,6 @@ export function buildErrorXml(code, message, requestId = '') {
   ].join('\n')
 }
 
-/**
- * Build ListBucketResult XML (ListObjectsV2 response).
- * @param {string} bucket
- * @param {Array<{key: string, size: number, lastModified: Date|string, etag?: string, storageClass?: string}>} objects
- * @param {object} options
- * @param {string} [options.prefix='']
- * @param {string} [options.delimiter='']
- * @param {number} [options.maxKeys=1000]
- * @param {string} [options.continuationToken='']
- * @param {string} [options.nextContinuationToken='']
- * @param {boolean} [options.isTruncated=false]
- * @param {string[]} [options.commonPrefixes=[]]
- * @returns {string} XML string
- */
 export function buildListBucketResult(bucket, objects = [], options = {}) {
   const {
     prefix = '',
@@ -61,15 +33,18 @@ export function buildListBucketResult(bucket, objects = [], options = {}) {
     maxKeys = 1000,
     continuationToken = '',
     nextContinuationToken = '',
+    startAfter = '',
     isTruncated = false,
     commonPrefixes = [],
+    keyCount = objects.length + commonPrefixes.length,
   } = options
 
-  const contents = objects.map(obj => {
+  const contents = objects.map((obj) => {
     const lastMod = obj.lastModified
       ? new Date(obj.lastModified).toISOString()
       : new Date().toISOString()
     const etag = obj.etag ? `&quot;${obj.etag.replace(/"/g, '')}&quot;` : ''
+
     return [
       '  <Contents>',
       `    <Key>${esc(obj.key)}</Key>`,
@@ -81,9 +56,13 @@ export function buildListBucketResult(bucket, objects = [], options = {}) {
     ].join('\n')
   }).join('\n')
 
-  const prefixNodes = commonPrefixes.map(p =>
-    `  <CommonPrefixes>\n    <Prefix>${esc(p)}</Prefix>\n  </CommonPrefixes>`
-  ).join('\n')
+  const prefixNodes = commonPrefixes.map((entry) => (
+    [
+      '  <CommonPrefixes>',
+      `    <Prefix>${esc(entry)}</Prefix>`,
+      '  </CommonPrefixes>',
+    ].join('\n')
+  )).join('\n')
 
   const lines = [
     XML_DECLARATION,
@@ -91,11 +70,12 @@ export function buildListBucketResult(bucket, objects = [], options = {}) {
     `  <Name>${esc(bucket)}</Name>`,
     `  <Prefix>${esc(prefix)}</Prefix>`,
     `  <MaxKeys>${maxKeys}</MaxKeys>`,
+    `  <KeyCount>${keyCount}</KeyCount>`,
     `  <IsTruncated>${isTruncated}</IsTruncated>`,
-    `  <KeyCount>${objects.length}</KeyCount>`,
   ]
 
   if (delimiter) lines.push(`  <Delimiter>${esc(delimiter)}</Delimiter>`)
+  if (startAfter) lines.push(`  <StartAfter>${esc(startAfter)}</StartAfter>`)
   if (continuationToken) lines.push(`  <ContinuationToken>${esc(continuationToken)}</ContinuationToken>`)
   if (nextContinuationToken) lines.push(`  <NextContinuationToken>${esc(nextContinuationToken)}</NextContinuationToken>`)
   if (contents) lines.push(contents)
@@ -105,9 +85,6 @@ export function buildListBucketResult(bucket, objects = [], options = {}) {
   return lines.join('\n')
 }
 
-/**
- * Build InitiateMultipartUpload XML response.
- */
 export function buildInitiateMultipartUploadResult(bucket, key, uploadId) {
   return [
     XML_DECLARATION,
@@ -119,9 +96,6 @@ export function buildInitiateMultipartUploadResult(bucket, key, uploadId) {
   ].join('\n')
 }
 
-/**
- * Build CompleteMultipartUpload XML response.
- */
 export function buildCompleteMultipartUploadResult(bucket, key, location, etag) {
   return [
     XML_DECLARATION,
@@ -134,21 +108,24 @@ export function buildCompleteMultipartUploadResult(bucket, key, location, etag) 
   ].join('\n')
 }
 
-/**
- * Build DeleteObjects result XML.
- */
 export function buildDeleteObjectsResult(deleted = [], errors = []) {
-  const deletedNodes = deleted.map(k =>
-    `  <Deleted>\n    <Key>${esc(k)}</Key>\n  </Deleted>`
-  ).join('\n')
+  const deletedNodes = deleted.map((key) => (
+    [
+      '  <Deleted>',
+      `    <Key>${esc(key)}</Key>`,
+      '  </Deleted>',
+    ].join('\n')
+  )).join('\n')
 
-  const errorNodes = errors.map(e => [
-    '  <Error>',
-    `    <Key>${esc(e.key)}</Key>`,
-    `    <Code>${esc(e.code)}</Code>`,
-    `    <Message>${esc(e.message)}</Message>`,
-    '  </Error>',
-  ].join('\n')).join('\n')
+  const errorNodes = errors.map((entry) => (
+    [
+      '  <Error>',
+      `    <Key>${esc(entry.key)}</Key>`,
+      `    <Code>${esc(entry.code)}</Code>`,
+      `    <Message>${esc(entry.message)}</Message>`,
+      '  </Error>',
+    ].join('\n')
+  )).join('\n')
 
   return [
     XML_DECLARATION,

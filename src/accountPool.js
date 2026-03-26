@@ -1,15 +1,16 @@
 /**
  * src/accountPool.js
- * Account pool management: selection, quota tracking, in-memory state.
+ * Account pool management: selection, quota tracking, and in-memory state.
  */
 
 import {
   getAllAccounts,
+  getAccountById,
   upsertAccount,
-  updateUsedBytes,
   deactivateMissingAccounts,
 } from './db.js'
 import { rtdbGet, rtdbPatch } from './firebase.js'
+import { metrics } from './routes/metrics.js'
 import config from './config.js'
 
 export class StorageFullError extends Error {
@@ -20,14 +21,22 @@ export class StorageFullError extends Error {
   }
 }
 
-/** @type {Map<string, object>} */
 const accountMap = new Map()
 let activeAccounts = []
 
+function refreshMetrics() {
+  for (const account of accountMap.values()) {
+    metrics.accountUsedBytes.set({ account_id: account.account_id }, Math.max(0, account.used_bytes ?? 0))
+    metrics.accountQuotaBytes.set({ account_id: account.account_id }, Math.max(0, account.quota_bytes ?? 0))
+  }
+}
+
 function rebuildActiveAccounts() {
   activeAccounts = [...accountMap.values()]
-    .filter(account => account.active === 1 || account.active === true)
+    .filter((account) => account.active === 1 || account.active === true)
     .sort((left, right) => left.used_bytes - right.used_bytes || left.account_id.localeCompare(right.account_id))
+
+  refreshMetrics()
 }
 
 function loadFromSQLite() {
@@ -42,6 +51,28 @@ function loadFromSQLite() {
 }
 
 loadFromSQLite()
+
+export function syncAccountsFromRows(rows = []) {
+  for (const row of rows) {
+    if (!row?.account_id) continue
+    accountMap.set(row.account_id, { ...row })
+  }
+
+  rebuildActiveAccounts()
+}
+
+export function syncAccountFromDb(accountId) {
+  const row = getAccountById(accountId)
+  if (!row) {
+    accountMap.delete(accountId)
+    rebuildActiveAccounts()
+    return null
+  }
+
+  accountMap.set(accountId, { ...row })
+  rebuildActiveAccounts()
+  return row
+}
 
 export function selectAccountForUpload(sizeBytes, excludeIds = new Set()) {
   for (const account of activeAccounts) {
@@ -58,38 +89,19 @@ export function selectAccountForUpload(sizeBytes, excludeIds = new Set()) {
   )
 }
 
-export function recordUpload(accountId, sizeBytes) {
-  updateUsedBytes(accountId, sizeBytes)
-  const account = accountMap.get(accountId)
-  if (!account) return
-
-  account.used_bytes = Math.max(0, account.used_bytes + sizeBytes)
-  rebuildActiveAccounts()
-
-  Promise.resolve()
-    .then(() => rtdbPatch(`/accounts/${accountId}`, { usedBytes: account.used_bytes }))
-    .catch(() => {})
-}
-
-export function recordDelete(accountId, sizeBytes) {
-  updateUsedBytes(accountId, -sizeBytes)
-  const account = accountMap.get(accountId)
-  if (!account) return
-
-  account.used_bytes = Math.max(0, account.used_bytes - sizeBytes)
-  rebuildActiveAccounts()
-
-  Promise.resolve()
-    .then(() => rtdbPatch(`/accounts/${accountId}`, { usedBytes: account.used_bytes }))
-    .catch(() => {})
-}
-
 export function setAccountUsedBytes(accountId, usedBytes) {
   const account = accountMap.get(accountId)
   if (!account) return
 
   account.used_bytes = Math.max(0, usedBytes)
   rebuildActiveAccounts()
+}
+
+export async function patchAccountUsageToRtdb(accountId) {
+  const account = accountMap.get(accountId)
+  if (!account) return
+
+  await rtdbPatch(`/accounts/${accountId}`, { usedBytes: account.used_bytes })
 }
 
 export async function reloadAccountsFromRTDB() {
@@ -101,16 +113,16 @@ export async function reloadAccountsFromRTDB() {
       for (const [accountId, data] of Object.entries(rtdbAccounts)) {
         ids.push(accountId)
         upsertAccount({
-          account_id:    accountId,
+          account_id: accountId,
           access_key_id: data.accessKeyId,
-          secret_key:    data.secretAccessKey,
-          endpoint:      data.endpoint,
-          region:        data.region,
-          bucket:        data.bucket,
-          quota_bytes:   data.quotaBytes ?? 5_368_709_120,
-          used_bytes:    data.usedBytes ?? 0,
-          active:        data.active ? 1 : 0,
-          added_at:      data.addedAt ?? Date.now(),
+          secret_key: data.secretAccessKey,
+          endpoint: data.endpoint,
+          region: data.region,
+          bucket: data.bucket,
+          quota_bytes: data.quotaBytes ?? 5_368_709_120,
+          used_bytes: data.usedBytes ?? 0,
+          active: data.active ? 1 : 0,
+          added_at: data.addedAt ?? Date.now(),
         })
       }
     }
@@ -145,4 +157,3 @@ export function getAccountsStats() {
 
   return { total: all.length, active: activeAccounts.length, full, totalBytes, usedBytes }
 }
-

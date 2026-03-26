@@ -11,7 +11,7 @@
       ".read": "auth != null",
       ".write": "auth != null",
       "$encodedKey": {
-        ".indexOn": ["accountId", "bucket", "uploadedAt"]
+        ".indexOn": ["accountId", "bucket", "backendKey", "state", "updatedAt", "deletedAt"]
       }
     },
     "instances": {

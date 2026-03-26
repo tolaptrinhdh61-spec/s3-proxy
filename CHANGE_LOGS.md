@@ -1,3 +1,27 @@
+## [2026-03-26 09:38] — Metadata-backed logical bucket and reconciliation
+
+**Loại:** feat  
+**Tóm tắt yêu cầu:** upgrade metadata from routing helper to logical control plane, add metadata-backed list, reconciler, and docs updates  
+**Nội dung thay đổi:**
+- File `src/db.js`: mở rộng bảng `routes` thành unified metadata table với tombstone, `backend_key`, `sync_state`, `reconcile_status`, migration idempotent, và helper giao dịch cho upload/delete/reconciliation.
+- File `src/routes/s3.js`: thay PUT/GET/HEAD/DELETE/LIST sang metadata-first flow, ListObjectsV2 từ SQLite, backend key namespacing cho write mới, delete an toàn bằng `DELETING` -> `DELETED`.
+- File `src/reconciler.js`: thêm background reconciler quét inventory backend, đánh dấu drift, auto-heal an toàn, flush pending RTDB sync, và không làm crash process.
+- File `src/inventoryScanner.js`: tách shared inventory scan dùng lại cho quota poller và reconciler.
+- File `src/quotaPoller.js`: refactor chỉ còn usage verification, dùng inventory scanner chung và đồng bộ absolute `used_bytes`.
+- File `src/accountPool.js`: đồng bộ in-memory account state từ DB rows giao dịch thay vì blind increment/decrement.
+- File `src/index.js`: bootstrap lại RTDB backfill/listeners/workers để hỗ trợ metadata control plane mới.
+- File `src/routes/metrics.js`: thêm metric cho metadata list, lookup latency, commit failure, reconciler mismatch, orphan/missing objects, logical object counts/bytes.
+- File `src/metadata.js`, `src/controlPlane.js`: gom helper backend key, continuation token, RTDB document shape, pending sync replication.
+- File `src/firebase.js`, `src/routes/health.js`, `src/utils/s3Xml.js`: cập nhật supporting layers cho delete auth, health count visible object, XML ListObjectsV2 metadata-backed.
+- File `database.rules.json`, `.env.example`, `README.md`: cập nhật index RTDB, env vars mới, và tài liệu triển khai/kiến trúc/failure semantics.
+- File `test/storage.test.js`, `test/server.test.js`: cập nhật test theo metadata commit transaction, tombstone, pagination, delimiter, và metrics mới.
+
+**Ghi chú kỹ thuật:**
+- Migration giữ nguyên bảng `routes` và mở rộng nó thành unified metadata table để không cần tách dữ liệu routing/listing sang bảng mới.
+- Write mới dùng `backend_key` dạng `<logical-bucket>/<object-key>`; row cũ được migrate in place và giữ tương thích qua `backend_key` cũ/default.
+- RTDB sync có thể eventual nếu remote tạm lỗi; row sẽ giữ `PENDING_SYNC` và được background flusher gửi lại.
+
+---
 ## [2026-03-26 08:34] — Fix Bootstrap, Runtime, Test Coverage
 
 **Loại:** fix  
@@ -72,4 +96,5 @@
 - File `test/firebase.test.js`: 6 test cases theo checklist T2
 
 ---
+
 

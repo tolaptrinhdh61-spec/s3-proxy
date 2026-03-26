@@ -1,18 +1,18 @@
 /**
  * src/routes/metrics.js
  * GET /metrics — Prometheus text format, no auth required.
- * Registers all prom-client metrics used across the proxy.
  */
 
-import { Registry, Counter, Gauge, collectDefaultMetrics } from 'prom-client'
-
-// ─── Registry ─────────────────────────────────────────────────────────────────
+import { Registry, Counter, Gauge, Histogram, collectDefaultMetrics } from 'prom-client'
+import {
+  getActiveObjectStatsByBucket,
+  getLogicalBytesByBucketAccount,
+  getRouteStateCountsByAccount,
+} from '../db.js'
 
 export const register = new Registry()
 register.setDefaultLabels({ service: 's3proxy' })
 collectDefaultMetrics({ register })
-
-// ─── Counters & Gauges ────────────────────────────────────────────────────────
 
 export const metrics = {
   requestsTotal: new Counter({
@@ -81,9 +81,88 @@ export const metrics = {
     labelNames: ['reason'],
     registers: [register],
   }),
+
+  metadataBackedListRequestsTotal: new Counter({
+    name: 's3proxy_metadata_list_requests_total',
+    help: 'Metadata-backed list requests',
+    labelNames: ['status_code'],
+    registers: [register],
+  }),
+
+  metadataLookupDurationSeconds: new Histogram({
+    name: 's3proxy_metadata_lookup_duration_seconds',
+    help: 'Metadata lookup latency by source',
+    labelNames: ['source'],
+    buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1],
+    registers: [register],
+  }),
+
+  metadataCommitFailuresTotal: new Counter({
+    name: 's3proxy_metadata_commit_failures_total',
+    help: 'Metadata commit failures',
+    labelNames: ['stage'],
+    registers: [register],
+  }),
+
+  reconcilerMismatchTotal: new Counter({
+    name: 's3proxy_reconciler_mismatches_total',
+    help: 'Reconciler mismatches by type and account',
+    labelNames: ['type', 'account_id'],
+    registers: [register],
+  }),
+
+  orphanBackendObjects: new Gauge({
+    name: 's3proxy_orphan_backend_objects',
+    help: 'Backend objects without trusted logical metadata',
+    labelNames: ['account_id'],
+    registers: [register],
+  }),
+
+  missingBackendObjects: new Gauge({
+    name: 's3proxy_missing_backend_objects',
+    help: 'Metadata rows whose backend object is missing',
+    labelNames: ['account_id'],
+    registers: [register],
+  }),
+
+  activeLogicalObjects: new Gauge({
+    name: 's3proxy_active_logical_objects',
+    help: 'Active logical objects by bucket',
+    labelNames: ['bucket'],
+    registers: [register],
+  }),
+
+  logicalObjectBytes: new Gauge({
+    name: 's3proxy_logical_object_bytes',
+    help: 'Active logical object bytes by bucket and account',
+    labelNames: ['bucket', 'account_id'],
+    registers: [register],
+  }),
 }
 
-// ─── Route ────────────────────────────────────────────────────────────────────
+export function refreshMetadataMetrics() {
+  metrics.activeLogicalObjects.reset()
+  metrics.logicalObjectBytes.reset()
+  metrics.orphanBackendObjects.reset()
+  metrics.missingBackendObjects.reset()
+
+  for (const row of getActiveObjectStatsByBucket()) {
+    metrics.activeLogicalObjects.set({ bucket: row.bucket }, row.object_count)
+  }
+
+  for (const row of getLogicalBytesByBucketAccount()) {
+    metrics.logicalObjectBytes.set({ bucket: row.bucket, account_id: row.account_id }, row.total_bytes)
+  }
+
+  for (const row of getRouteStateCountsByAccount()) {
+    if (row.state === 'ORPHANED') {
+      metrics.orphanBackendObjects.set({ account_id: row.account_id }, row.object_count)
+    }
+    if (row.state === 'MISSING_BACKEND') {
+      metrics.missingBackendObjects.set({ account_id: row.account_id }, row.object_count)
+    }
+  }
+}
 
 export default async function metricsRoutes(fastify, _opts) {
   fastify.get('/metrics', {

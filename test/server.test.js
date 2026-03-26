@@ -24,7 +24,7 @@ const errorHandler = (await import('../src/plugins/errorHandler.js')).default
 const healthRoutes = (await import('../src/routes/health.js')).default
 const metricsRoutes = (await import('../src/routes/metrics.js')).default
 const s3Routes = (await import('../src/routes/s3.js')).default
-const { db, upsertAccount, getRoute } = await import('../src/db.js')
+const { db, upsertAccount, getRoute, ROUTE_STATE } = await import('../src/db.js')
 const { reloadAccountsFromSQLite } = await import('../src/accountPool.js')
 
 let passed = 0
@@ -253,8 +253,10 @@ async function main() {
         headers: authHeaders,
         payload: 'hello world',
       })
+      const stored = getRoute(Buffer.from('mybucket/path/to/file.txt').toString('base64url'))
       assert(putRes.statusCode === 200, `PUT status=${putRes.statusCode}`)
-      assert(getRoute(Buffer.from('mybucket/path/to/file.txt').toString('base64url')), 'route not stored')
+      assert(stored, 'route not stored')
+      assert(stored.backend_key === 'mybucket/path/to/file.txt', `backend_key=${stored.backend_key}`)
       ok('PUT /mybucket/path/to/file.txt -> 200, route duoc luu')
     } catch (err) {
       fail('PUT /mybucket/path/to/file.txt', err)
@@ -287,6 +289,19 @@ async function main() {
     }
 
     try {
+      for (const [url, payload] of [
+        ['/mybucket/photos/a.txt', 'A'],
+        ['/mybucket/photos/2026/b.txt', 'B'],
+      ]) {
+        const res = await fastify.inject({
+          method: 'PUT',
+          url,
+          headers: authHeaders,
+          payload,
+        })
+        assert(res.statusCode === 200, `seed PUT ${url} status=${res.statusCode}`)
+      }
+
       const listRes = await fastify.inject({
         method: 'GET',
         url: '/mybucket?list-type=2',
@@ -298,6 +313,33 @@ async function main() {
       ok('GET /mybucket -> XML ListBucketResult tu route table')
     } catch (err) {
       fail('GET /mybucket', err)
+    }
+
+    try {
+      const prefixRes = await fastify.inject({
+        method: 'GET',
+        url: '/mybucket?list-type=2&prefix=photos/&delimiter=/',
+        headers: { 'x-api-key': 'test' },
+      })
+      assert(prefixRes.statusCode === 200, `prefix LIST status=${prefixRes.statusCode}`)
+      assert(prefixRes.payload.includes('<Key>photos/a.txt</Key>'), 'prefix list missing file')
+      assert(prefixRes.payload.includes('<Prefix>photos/2026/</Prefix>'), 'prefix list missing CommonPrefixes')
+      ok('GET /mybucket?prefix=photos/&delimiter=/ -> metadata CommonPrefixes + objects')
+    } catch (err) {
+      fail('GET /mybucket?prefix=photos/&delimiter=/', err)
+    }
+
+    try {
+      const pagedRes = await fastify.inject({
+        method: 'GET',
+        url: '/mybucket?list-type=2&max-keys=1',
+        headers: { 'x-api-key': 'test' },
+      })
+      assert(pagedRes.statusCode === 200, `paged LIST status=${pagedRes.statusCode}`)
+      assert(/<NextContinuationToken>[^<]+<\/NextContinuationToken>/.test(pagedRes.payload), 'missing next continuation token')
+      ok('GET /mybucket?max-keys=1 -> opaque continuation token duoc tra ve')
+    } catch (err) {
+      fail('GET /mybucket?max-keys=1', err)
     }
 
     try {
@@ -329,7 +371,8 @@ async function main() {
       const metricsRes = await fastify.inject({ method: 'GET', url: '/metrics' })
       assert(metricsRes.statusCode === 200, `metrics status=${metricsRes.statusCode}`)
       assert(metricsRes.payload.includes('s3proxy_requests_total'), 'metrics missing request counter')
-      ok('GET /metrics -> text co s3proxy_requests_total')
+      assert(metricsRes.payload.includes('s3proxy_metadata_list_requests_total'), 'metrics missing metadata list counter')
+      ok('GET /metrics -> text co metrics moi cho metadata-backed list')
     } catch (err) {
       fail('GET /metrics', err)
     }
@@ -393,9 +436,23 @@ async function main() {
         url: '/mybucket/path/to/file.txt',
         headers: { 'x-api-key': 'test' },
       })
+      const route = getRoute(Buffer.from('mybucket/path/to/file.txt').toString('base64url'))
+      const afterDeleteGet = await fastify.inject({
+        method: 'GET',
+        url: '/mybucket/path/to/file.txt',
+        headers: { 'x-api-key': 'test' },
+      })
+      const listAfterDelete = await fastify.inject({
+        method: 'GET',
+        url: '/mybucket?list-type=2',
+        headers: { 'x-api-key': 'test' },
+      })
+
       assert(deleteRes.statusCode === 204, `DELETE status=${deleteRes.statusCode}`)
-      assert(!getRoute(Buffer.from('mybucket/path/to/file.txt').toString('base64url')), 'route still exists after delete')
-      ok('DELETE /mybucket/path/to/file.txt -> 204, route bi xoa')
+      assert(route && route.state === ROUTE_STATE.DELETED, `route=${JSON.stringify(route)}`)
+      assert(afterDeleteGet.statusCode === 404, `GET after delete status=${afterDeleteGet.statusCode}`)
+      assert(!listAfterDelete.payload.includes('<Key>path/to/file.txt</Key>'), 'deleted object still listed')
+      ok('DELETE /mybucket/path/to/file.txt -> tombstone duoc luu, GET 404 va LIST an object')
     } catch (err) {
       fail('DELETE /mybucket/path/to/file.txt', err)
     }
@@ -417,4 +474,3 @@ main().catch((err) => {
   console.error(err)
   process.exit(1)
 })
-

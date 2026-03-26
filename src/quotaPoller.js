@@ -1,64 +1,44 @@
 /**
  * src/quotaPoller.js
- * Periodic background poller - S3 ListObjectsV2, updates SQLite if diff > 5%.
- * Never crashes the process.
+ * Periodic usage verification using the shared backend inventory scanner.
  */
 
-import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3'
 import { getAllActiveAccounts, setUsedBytesAbsolute } from './db.js'
-import { setAccountUsedBytes } from './accountPool.js'
+import { syncAccountFromDb } from './accountPool.js'
+import { scanAccountInventory } from './inventoryScanner.js'
 import config from './config.js'
 
 let pollerTimer = null
 let running = false
+let activeLogger = console
 
-async function pollAccount(account) {
-  const client = new S3Client({
-    endpoint: account.endpoint,
-    region: account.region,
-    credentials: {
-      accessKeyId: account.access_key_id,
-      secretAccessKey: account.secret_key,
-    },
-    forcePathStyle: true,
-  })
-
-  let totalBytes = 0
-  let continuationToken
-
-  do {
-    const command = new ListObjectsV2Command({
-      Bucket: account.bucket,
-      MaxKeys: 1000,
-      ContinuationToken: continuationToken,
-    })
-    const response = await client.send(command)
-
-    if (response.Contents) {
-      for (const object of response.Contents) {
-        totalBytes += object.Size ?? 0
-      }
-    }
-
-    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined
-  } while (continuationToken)
-
+export async function verifyAccountUsage(account, logger = activeLogger) {
+  const { totalBytes } = await scanAccountInventory(account)
   const stored = account.used_bytes
-  if (stored === 0 && totalBytes === 0) return
-
   const diff = Math.abs(totalBytes - stored)
-  const threshold = stored * 0.05
+  const threshold = Math.max(1, stored * config.QUOTA_DRIFT_THRESHOLD_RATIO)
+
+  if (stored === 0 && totalBytes === 0) {
+    return { accountId: account.account_id, totalBytes, updated: false }
+  }
 
   if (diff > threshold) {
-    process.stderr.write(
-      `[quotaPoller] WARN: ${account.account_id} stored=${stored} polled=${totalBytes} diff=${diff} -> updating\n`
-    )
+    logger.warn?.({
+      accountId: account.account_id,
+      stored,
+      totalBytes,
+      diff,
+    }, 'quota poller corrected account usage drift')
+
     setUsedBytesAbsolute(account.account_id, totalBytes)
-    setAccountUsedBytes(account.account_id, totalBytes)
+    syncAccountFromDb(account.account_id)
+    return { accountId: account.account_id, totalBytes, updated: true }
   }
+
+  return { accountId: account.account_id, totalBytes, updated: false }
 }
 
-async function runPollCycle() {
+export async function runQuotaPollCycle(logger = activeLogger) {
   if (running) return
   running = true
 
@@ -66,27 +46,28 @@ async function runPollCycle() {
     const accounts = getAllActiveAccounts()
     for (const account of accounts) {
       try {
-        await pollAccount(account)
+        await verifyAccountUsage(account, logger)
       } catch (err) {
-        process.stderr.write(`[quotaPoller] ERROR polling ${account.account_id}: ${err.message}\n`)
+        logger.error?.({ err, accountId: account.account_id }, 'quota poller account scan failed')
       }
     }
   } catch (err) {
-    process.stderr.write(`[quotaPoller] ERROR in poll cycle: ${err.message}\n`)
+    logger.error?.({ err }, 'quota poller cycle failed')
   } finally {
     running = false
   }
 }
 
-export function startQuotaPoller() {
+export function startQuotaPoller(logger = console) {
   if (pollerTimer) return
 
+  activeLogger = logger
   pollerTimer = setInterval(() => {
-    runPollCycle().catch(() => {})
+    runQuotaPollCycle(activeLogger).catch(() => {})
   }, config.QUOTA_POLL_INTERVAL_MS)
 
   if (pollerTimer.unref) pollerTimer.unref()
-  process.stderr.write(`[quotaPoller] started, interval=${config.QUOTA_POLL_INTERVAL_MS}ms\n`)
+  activeLogger.info?.({ intervalMs: config.QUOTA_POLL_INTERVAL_MS }, 'quota poller started')
 }
 
 export function stopQuotaPoller() {
@@ -94,5 +75,5 @@ export function stopQuotaPoller() {
 
   clearInterval(pollerTimer)
   pollerTimer = null
-  process.stderr.write('[quotaPoller] stopped\n')
+  activeLogger.info?.('quota poller stopped')
 }

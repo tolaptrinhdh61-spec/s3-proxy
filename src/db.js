@@ -1,6 +1,6 @@
 /**
  * src/db.js
- * SQLite init, migrations (idempotent), and all query functions.
+ * SQLite init, idempotent migrations, and metadata/account query helpers.
  * Uses better-sqlite3 (synchronous).
  */
 
@@ -11,7 +11,29 @@ import config from './config.js'
 
 try {
   mkdirSync(dirname(config.SQLITE_PATH), { recursive: true })
-} catch { /* ignore */ }
+} catch {
+  // ignore
+}
+
+export const ROUTE_STATE = Object.freeze({
+  ACTIVE: 'ACTIVE',
+  DELETING: 'DELETING',
+  DELETED: 'DELETED',
+  MISSING_BACKEND: 'MISSING_BACKEND',
+  ORPHANED: 'ORPHANED',
+})
+
+export const ROUTE_SYNC_STATE = Object.freeze({
+  SYNCED: 'SYNCED',
+  PENDING_SYNC: 'PENDING_SYNC',
+})
+
+export const ROUTE_RECONCILE_STATUS = Object.freeze({
+  HEALTHY: 'HEALTHY',
+  WRONG_ACCOUNT: 'WRONG_ACCOUNT',
+  METADATA_MISMATCH: 'METADATA_MISMATCH',
+  NEEDS_REVIEW: 'NEEDS_REVIEW',
+})
 
 export const db = new Database(config.SQLITE_PATH)
 
@@ -20,6 +42,32 @@ db.pragma('synchronous = NORMAL')
 db.pragma('cache_size = -64000')
 db.pragma('foreign_keys = ON')
 db.pragma('busy_timeout = 5000')
+
+function toTimestamp(value, fallback = Date.now()) {
+  if (value === undefined || value === null || value === '') return fallback
+  if (value instanceof Date) return value.getTime()
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : fallback
+}
+
+function toNullableTimestamp(value) {
+  if (value === undefined || value === null || value === '') return null
+  return toTimestamp(value, null)
+}
+
+function tableColumns(tableName) {
+  return db.prepare(`PRAGMA table_info(${tableName})`).all()
+}
+
+function hasColumn(tableName, columnName) {
+  return tableColumns(tableName).some((column) => column.name === columnName)
+}
+
+function ensureColumn(tableName, columnName, sqlFragment) {
+  if (!hasColumn(tableName, columnName)) {
+    db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${sqlFragment}`)
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS accounts (
@@ -36,28 +84,145 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS routes (
-    encoded_key  TEXT    PRIMARY KEY,
-    account_id   TEXT    NOT NULL REFERENCES accounts(account_id),
-    bucket       TEXT    NOT NULL,
-    object_key   TEXT    NOT NULL,
-    size_bytes   INTEGER NOT NULL DEFAULT 0,
-    uploaded_at  INTEGER NOT NULL,
-    instance_id  TEXT    NOT NULL
+    encoded_key           TEXT    PRIMARY KEY,
+    account_id            TEXT    NOT NULL REFERENCES accounts(account_id),
+    bucket                TEXT    NOT NULL,
+    object_key            TEXT    NOT NULL,
+    backend_key           TEXT    NOT NULL DEFAULT '',
+    size_bytes            INTEGER NOT NULL DEFAULT 0,
+    etag                  TEXT,
+    last_modified         INTEGER,
+    content_type          TEXT,
+    uploaded_at           INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL DEFAULT 0,
+    deleted_at            INTEGER,
+    metadata_version      INTEGER NOT NULL DEFAULT 1,
+    state                 TEXT    NOT NULL DEFAULT 'ACTIVE',
+    sync_state            TEXT    NOT NULL DEFAULT 'SYNCED',
+    reconcile_status      TEXT    NOT NULL DEFAULT 'HEALTHY',
+    backend_last_seen_at  INTEGER,
+    backend_missing_since INTEGER,
+    last_reconciled_at    INTEGER,
+    instance_id           TEXT    NOT NULL
   );
-
-  CREATE INDEX IF NOT EXISTS idx_routes_account  ON routes(account_id);
-  CREATE INDEX IF NOT EXISTS idx_routes_bucket   ON routes(bucket);
-  CREATE INDEX IF NOT EXISTS idx_routes_uploaded ON routes(uploaded_at);
-  CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(active, used_bytes);
 
   CREATE TABLE IF NOT EXISTS multipart_uploads (
     upload_id   TEXT    PRIMARY KEY,
     account_id  TEXT    NOT NULL,
     bucket      TEXT    NOT NULL,
     object_key  TEXT    NOT NULL,
+    backend_key TEXT    NOT NULL DEFAULT '',
     started_at  INTEGER NOT NULL
   );
 `)
+
+ensureColumn('routes', 'backend_key', "backend_key TEXT NOT NULL DEFAULT ''")
+ensureColumn('routes', 'etag', 'etag TEXT')
+ensureColumn('routes', 'last_modified', 'last_modified INTEGER')
+ensureColumn('routes', 'content_type', 'content_type TEXT')
+ensureColumn('routes', 'updated_at', 'updated_at INTEGER NOT NULL DEFAULT 0')
+ensureColumn('routes', 'deleted_at', 'deleted_at INTEGER')
+ensureColumn('routes', 'metadata_version', 'metadata_version INTEGER NOT NULL DEFAULT 1')
+ensureColumn('routes', 'state', "state TEXT NOT NULL DEFAULT 'ACTIVE'")
+ensureColumn('routes', 'sync_state', "sync_state TEXT NOT NULL DEFAULT 'SYNCED'")
+ensureColumn('routes', 'reconcile_status', "reconcile_status TEXT NOT NULL DEFAULT 'HEALTHY'")
+ensureColumn('routes', 'backend_last_seen_at', 'backend_last_seen_at INTEGER')
+ensureColumn('routes', 'backend_missing_since', 'backend_missing_since INTEGER')
+ensureColumn('routes', 'last_reconciled_at', 'last_reconciled_at INTEGER')
+ensureColumn('multipart_uploads', 'backend_key', "backend_key TEXT NOT NULL DEFAULT ''")
+
+db.exec(`
+  UPDATE routes
+  SET backend_key = object_key
+  WHERE COALESCE(backend_key, '') = '';
+
+  UPDATE routes
+  SET last_modified = COALESCE(last_modified, uploaded_at)
+  WHERE last_modified IS NULL;
+
+  UPDATE routes
+  SET updated_at = COALESCE(NULLIF(updated_at, 0), uploaded_at)
+  WHERE updated_at IS NULL OR updated_at = 0;
+
+  UPDATE routes
+  SET metadata_version = COALESCE(NULLIF(metadata_version, 0), 1)
+  WHERE metadata_version IS NULL OR metadata_version = 0;
+
+  UPDATE routes
+  SET state = 'ACTIVE'
+  WHERE COALESCE(state, '') = '';
+
+  UPDATE routes
+  SET sync_state = 'SYNCED'
+  WHERE COALESCE(sync_state, '') = '';
+
+  UPDATE routes
+  SET reconcile_status = 'HEALTHY'
+  WHERE COALESCE(reconcile_status, '') = '';
+
+  UPDATE multipart_uploads
+  SET backend_key = object_key
+  WHERE COALESCE(backend_key, '') = '';
+
+  CREATE INDEX IF NOT EXISTS idx_routes_account ON routes(account_id);
+  CREATE INDEX IF NOT EXISTS idx_routes_account_backend ON routes(account_id, backend_key);
+  CREATE INDEX IF NOT EXISTS idx_routes_bucket_object ON routes(bucket, object_key, state, deleted_at);
+  CREATE INDEX IF NOT EXISTS idx_routes_uploaded ON routes(uploaded_at);
+  CREATE INDEX IF NOT EXISTS idx_routes_sync_state ON routes(sync_state, updated_at);
+  CREATE INDEX IF NOT EXISTS idx_routes_state ON routes(state, account_id);
+  CREATE INDEX IF NOT EXISTS idx_accounts_active ON accounts(active, used_bytes);
+`)
+
+function isUsageCounted(route) {
+  if (!route) return false
+  return route.state === ROUTE_STATE.ACTIVE || route.state === ROUTE_STATE.DELETING
+}
+
+function applyAccountAdjustments(deltas) {
+  for (const [accountId, delta] of deltas.entries()) {
+    if (!delta) continue
+    db.prepare(`
+      UPDATE accounts
+      SET used_bytes = MAX(0, used_bytes + @delta)
+      WHERE account_id = @account_id
+    `).run({ account_id: accountId, delta })
+  }
+}
+
+function fetchAffectedAccounts(accountIds) {
+  return [...new Set(accountIds)]
+    .map((accountId) => getAccountById(accountId))
+    .filter(Boolean)
+}
+
+function normalizeRouteForWrite(route, existing) {
+  const now = Date.now()
+  const uploadedAt = toTimestamp(route.uploaded_at, existing?.uploaded_at ?? now)
+  const updatedAt = toTimestamp(route.updated_at, now)
+
+  return {
+    encoded_key: route.encoded_key,
+    account_id: route.account_id ?? existing?.account_id ?? '',
+    bucket: route.bucket ?? existing?.bucket ?? '',
+    object_key: route.object_key ?? existing?.object_key ?? '',
+    backend_key: route.backend_key ?? existing?.backend_key ?? route.object_key ?? existing?.object_key ?? '',
+    size_bytes: Number(route.size_bytes ?? existing?.size_bytes ?? 0) || 0,
+    etag: route.etag ?? existing?.etag ?? null,
+    last_modified: toNullableTimestamp(route.last_modified ?? existing?.last_modified ?? uploadedAt),
+    content_type: route.content_type ?? existing?.content_type ?? null,
+    uploaded_at: uploadedAt,
+    updated_at: updatedAt,
+    deleted_at: toNullableTimestamp(route.deleted_at ?? existing?.deleted_at ?? null),
+    metadata_version: Number(route.metadata_version ?? existing?.metadata_version ?? 1) || 1,
+    state: route.state ?? existing?.state ?? ROUTE_STATE.ACTIVE,
+    sync_state: route.sync_state ?? existing?.sync_state ?? ROUTE_SYNC_STATE.SYNCED,
+    reconcile_status: route.reconcile_status ?? existing?.reconcile_status ?? ROUTE_RECONCILE_STATUS.HEALTHY,
+    backend_last_seen_at: toNullableTimestamp(route.backend_last_seen_at ?? existing?.backend_last_seen_at ?? null),
+    backend_missing_since: toNullableTimestamp(route.backend_missing_since ?? existing?.backend_missing_since ?? null),
+    last_reconciled_at: toNullableTimestamp(route.last_reconciled_at ?? existing?.last_reconciled_at ?? null),
+    instance_id: route.instance_id ?? existing?.instance_id ?? '',
+  }
+}
 
 const stmts = {
   upsertAccount: db.prepare(`
@@ -71,46 +236,156 @@ const stmts = {
   getAllAccounts: db.prepare(`SELECT * FROM accounts ORDER BY used_bytes ASC, account_id ASC`),
   getAllActiveAccounts: db.prepare(`SELECT * FROM accounts WHERE active = 1 ORDER BY used_bytes ASC, account_id ASC`),
   getAccountById: db.prepare(`SELECT * FROM accounts WHERE account_id = ?`),
-  updateUsedBytes: db.prepare(`UPDATE accounts SET used_bytes = MAX(0, used_bytes + @delta) WHERE account_id = @account_id`),
-  setUsedBytesAbsolute: db.prepare(`UPDATE accounts SET used_bytes = @bytes WHERE account_id = @account_id`),
+  setUsedBytesAbsolute: db.prepare(`
+    UPDATE accounts
+    SET used_bytes = MAX(0, @bytes)
+    WHERE account_id = @account_id
+  `),
   upsertRoute: db.prepare(`
-    INSERT OR REPLACE INTO routes
-      (encoded_key, account_id, bucket, object_key, size_bytes, uploaded_at, instance_id)
-    VALUES
-      (@encoded_key, @account_id, @bucket, @object_key, @size_bytes, @uploaded_at, @instance_id)
+    INSERT INTO routes (
+      encoded_key, account_id, bucket, object_key, backend_key,
+      size_bytes, etag, last_modified, content_type,
+      uploaded_at, updated_at, deleted_at, metadata_version,
+      state, sync_state, reconcile_status,
+      backend_last_seen_at, backend_missing_since, last_reconciled_at,
+      instance_id
+    ) VALUES (
+      @encoded_key, @account_id, @bucket, @object_key, @backend_key,
+      @size_bytes, @etag, @last_modified, @content_type,
+      @uploaded_at, @updated_at, @deleted_at, @metadata_version,
+      @state, @sync_state, @reconcile_status,
+      @backend_last_seen_at, @backend_missing_since, @last_reconciled_at,
+      @instance_id
+    )
+    ON CONFLICT(encoded_key) DO UPDATE SET
+      account_id = excluded.account_id,
+      bucket = excluded.bucket,
+      object_key = excluded.object_key,
+      backend_key = excluded.backend_key,
+      size_bytes = excluded.size_bytes,
+      etag = excluded.etag,
+      last_modified = excluded.last_modified,
+      content_type = excluded.content_type,
+      uploaded_at = excluded.uploaded_at,
+      updated_at = excluded.updated_at,
+      deleted_at = excluded.deleted_at,
+      metadata_version = excluded.metadata_version,
+      state = excluded.state,
+      sync_state = excluded.sync_state,
+      reconcile_status = excluded.reconcile_status,
+      backend_last_seen_at = excluded.backend_last_seen_at,
+      backend_missing_since = excluded.backend_missing_since,
+      last_reconciled_at = excluded.last_reconciled_at,
+      instance_id = excluded.instance_id
   `),
   getRoute: db.prepare(`SELECT * FROM routes WHERE encoded_key = ?`),
+  getRouteByBackendKey: db.prepare(`
+    SELECT *
+    FROM routes
+    WHERE account_id = @account_id
+      AND backend_key = @backend_key
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `),
   deleteRoute: db.prepare(`DELETE FROM routes WHERE encoded_key = ?`),
-  getAllRoutes: db.prepare(`SELECT * FROM routes ORDER BY uploaded_at DESC`),
+  getAllRoutes: db.prepare(`SELECT * FROM routes ORDER BY updated_at DESC, uploaded_at DESC`),
+  countRoutesAll: db.prepare(`SELECT COUNT(*) AS count FROM routes`),
+  countRoutesVisible: db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM routes
+    WHERE state = 'ACTIVE'
+      AND deleted_at IS NULL
+  `),
+  listVisibleObjectsPage: db.prepare(`
+    SELECT *
+    FROM routes
+    WHERE bucket = @bucket
+      AND state = 'ACTIVE'
+      AND deleted_at IS NULL
+      AND object_key >= @lower_bound
+    ORDER BY object_key ASC, encoded_key ASC
+    LIMIT @limit
+  `),
   listRoutesByBucket: db.prepare(`
-    SELECT * FROM routes
+    SELECT *
+    FROM routes
     WHERE bucket = @bucket
       AND object_key LIKE @prefix || '%'
-    ORDER BY object_key ASC
+    ORDER BY object_key ASC, encoded_key ASC
   `),
-  countRoutes: db.prepare(`SELECT COUNT(*) as count FROM routes`),
+  getTrackedRoutesByAccount: db.prepare(`
+    SELECT *
+    FROM routes
+    WHERE account_id = @account_id
+      AND state != 'DELETED'
+    ORDER BY object_key ASC, encoded_key ASC
+  `),
+  getPendingSyncRoutes: db.prepare(`
+    SELECT *
+    FROM routes
+    WHERE sync_state = 'PENDING_SYNC'
+    ORDER BY updated_at ASC, encoded_key ASC
+    LIMIT @limit
+  `),
+  markRouteSynced: db.prepare(`
+    UPDATE routes
+    SET sync_state = 'SYNCED',
+        updated_at = @updated_at
+    WHERE encoded_key = @encoded_key
+  `),
+  updateRouteState: db.prepare(`
+    UPDATE routes
+    SET state = @state,
+        updated_at = @updated_at,
+        deleted_at = @deleted_at,
+        metadata_version = @metadata_version,
+        sync_state = @sync_state,
+        reconcile_status = @reconcile_status,
+        backend_missing_since = @backend_missing_since,
+        last_reconciled_at = @last_reconciled_at
+    WHERE encoded_key = @encoded_key
+  `),
   upsertMultipartUpload: db.prepare(`
     INSERT OR REPLACE INTO multipart_uploads
-      (upload_id, account_id, bucket, object_key, started_at)
+      (upload_id, account_id, bucket, object_key, backend_key, started_at)
     VALUES
-      (@upload_id, @account_id, @bucket, @object_key, @started_at)
+      (@upload_id, @account_id, @bucket, @object_key, @backend_key, @started_at)
   `),
   getMultipartUpload: db.prepare(`SELECT * FROM multipart_uploads WHERE upload_id = ?`),
   deleteMultipartUpload: db.prepare(`DELETE FROM multipart_uploads WHERE upload_id = ?`),
+  activeObjectStatsByBucket: db.prepare(`
+    SELECT bucket, COUNT(*) AS object_count, COALESCE(SUM(size_bytes), 0) AS total_bytes
+    FROM routes
+    WHERE state = 'ACTIVE'
+      AND deleted_at IS NULL
+    GROUP BY bucket
+  `),
+  logicalBytesByBucketAccount: db.prepare(`
+    SELECT bucket, account_id, COALESCE(SUM(size_bytes), 0) AS total_bytes
+    FROM routes
+    WHERE state = 'ACTIVE'
+      AND deleted_at IS NULL
+    GROUP BY bucket, account_id
+  `),
+  stateCountsByAccount: db.prepare(`
+    SELECT account_id, state, COUNT(*) AS object_count
+    FROM routes
+    GROUP BY account_id, state
+  `),
 }
 
 export function upsertAccount(account) {
   stmts.upsertAccount.run({
-    account_id:    account.account_id,
+    account_id: account.account_id,
     access_key_id: account.access_key_id,
-    secret_key:    account.secret_key,
-    endpoint:      account.endpoint,
-    region:        account.region,
-    bucket:        account.bucket,
-    quota_bytes:   account.quota_bytes  ?? 5_368_709_120,
-    used_bytes:    account.used_bytes   ?? 0,
-    active:        account.active       ?? 1,
-    added_at:      account.added_at     ?? Date.now(),
+    secret_key: account.secret_key,
+    endpoint: account.endpoint,
+    region: account.region,
+    bucket: account.bucket,
+    quota_bytes: account.quota_bytes ?? 5_368_709_120,
+    used_bytes: account.used_bytes ?? 0,
+    active: account.active ?? 1,
+    added_at: account.added_at ?? Date.now(),
   })
 }
 
@@ -126,28 +401,22 @@ export function getAccountById(accountId) {
   return stmts.getAccountById.get(accountId)
 }
 
-export function updateUsedBytes(accountId, delta) {
-  stmts.updateUsedBytes.run({ account_id: accountId, delta })
-}
-
 export function setUsedBytesAbsolute(accountId, bytes) {
   stmts.setUsedBytesAbsolute.run({ account_id: accountId, bytes })
 }
 
 export function upsertRoute(route) {
-  stmts.upsertRoute.run({
-    encoded_key: route.encoded_key,
-    account_id:  route.account_id,
-    bucket:      route.bucket,
-    object_key:  route.object_key,
-    size_bytes:  route.size_bytes  ?? 0,
-    uploaded_at: route.uploaded_at ?? Date.now(),
-    instance_id: route.instance_id ?? '',
-  })
+  const existing = stmts.getRoute.get(route.encoded_key)
+  const normalized = normalizeRouteForWrite(route, existing)
+  stmts.upsertRoute.run(normalized)
 }
 
 export function getRoute(encodedKey) {
   return stmts.getRoute.get(encodedKey)
+}
+
+export function getRouteByBackendKey(accountId, backendKey) {
+  return stmts.getRouteByBackendKey.get({ account_id: accountId, backend_key: backendKey })
 }
 
 export function deleteRoute(encodedKey) {
@@ -162,16 +431,209 @@ export function listRoutesByBucket(bucket, prefix = '') {
   return stmts.listRoutesByBucket.all({ bucket, prefix })
 }
 
-export function countRoutes() {
-  return stmts.countRoutes.get().count
+export function listVisibleObjectsPage(bucket, { lowerBound = '', limit = 1000 } = {}) {
+  return stmts.listVisibleObjectsPage.all({
+    bucket,
+    lower_bound: lowerBound,
+    limit: Math.max(1, Math.min(Number(limit) || 1000, 5000)),
+  })
 }
+
+export function getTrackedRoutesByAccount(accountId) {
+  return stmts.getTrackedRoutesByAccount.all({ account_id: accountId })
+}
+
+export function countRoutes(options = {}) {
+  if (options.visibleOnly) {
+    return stmts.countRoutesVisible.get().count
+  }
+  return stmts.countRoutesAll.get().count
+}
+
+export function getPendingSyncRoutes(limit = 500) {
+  return stmts.getPendingSyncRoutes.all({ limit: Math.max(1, Math.min(Number(limit) || 500, 5000)) })
+}
+
+export function markRouteSynced(encodedKey, updatedAt = Date.now()) {
+  stmts.markRouteSynced.run({ encoded_key: encodedKey, updated_at: updatedAt })
+}
+
+function withVersion(existing, nextUpdatedAt = Date.now()) {
+  return {
+    metadataVersion: (existing?.metadata_version ?? 0) + 1,
+    updatedAt: nextUpdatedAt,
+  }
+}
+
+export const commitUploadedObjectMetadata = db.transaction((route) => {
+  const existing = stmts.getRoute.get(route.encoded_key)
+  const now = Date.now()
+  const { metadataVersion, updatedAt } = withVersion(existing, now)
+  const normalized = normalizeRouteForWrite({
+    ...route,
+    deleted_at: null,
+    state: ROUTE_STATE.ACTIVE,
+    sync_state: ROUTE_SYNC_STATE.PENDING_SYNC,
+    reconcile_status: ROUTE_RECONCILE_STATUS.HEALTHY,
+    metadata_version: metadataVersion,
+    updated_at: updatedAt,
+    uploaded_at: route.uploaded_at ?? now,
+    backend_last_seen_at: route.backend_last_seen_at ?? now,
+    backend_missing_since: null,
+    last_reconciled_at: route.last_reconciled_at ?? now,
+  }, existing)
+
+  const deltas = new Map()
+  if (isUsageCounted(existing)) {
+    deltas.set(existing.account_id, (deltas.get(existing.account_id) ?? 0) - existing.size_bytes)
+  }
+  if (isUsageCounted(normalized)) {
+    deltas.set(normalized.account_id, (deltas.get(normalized.account_id) ?? 0) + normalized.size_bytes)
+  }
+
+  stmts.upsertRoute.run(normalized)
+  applyAccountAdjustments(deltas)
+
+  return {
+    route: stmts.getRoute.get(normalized.encoded_key),
+    previous: existing ?? null,
+    affectedAccounts: fetchAffectedAccounts([...deltas.keys()]),
+  }
+})
+
+export const markRouteDeleting = db.transaction((encodedKey, now = Date.now()) => {
+  const existing = stmts.getRoute.get(encodedKey)
+  if (!existing || existing.state === ROUTE_STATE.DELETED) {
+    return existing ?? null
+  }
+
+  const { metadataVersion, updatedAt } = withVersion(existing, now)
+  stmts.updateRouteState.run({
+    encoded_key: encodedKey,
+    state: ROUTE_STATE.DELETING,
+    updated_at: updatedAt,
+    deleted_at: null,
+    metadata_version: metadataVersion,
+    sync_state: ROUTE_SYNC_STATE.PENDING_SYNC,
+    reconcile_status: ROUTE_RECONCILE_STATUS.HEALTHY,
+    backend_missing_since: null,
+    last_reconciled_at: now,
+  })
+
+  return stmts.getRoute.get(encodedKey)
+})
+
+export const revertDeletingRoute = db.transaction((encodedKey, now = Date.now()) => {
+  const existing = stmts.getRoute.get(encodedKey)
+  if (!existing || existing.state !== ROUTE_STATE.DELETING) {
+    return existing ?? null
+  }
+
+  const { metadataVersion, updatedAt } = withVersion(existing, now)
+  stmts.updateRouteState.run({
+    encoded_key: encodedKey,
+    state: ROUTE_STATE.ACTIVE,
+    updated_at: updatedAt,
+    deleted_at: null,
+    metadata_version: metadataVersion,
+    sync_state: ROUTE_SYNC_STATE.PENDING_SYNC,
+    reconcile_status: ROUTE_RECONCILE_STATUS.HEALTHY,
+    backend_missing_since: null,
+    last_reconciled_at: now,
+  })
+
+  return stmts.getRoute.get(encodedKey)
+})
+
+export const finalizeRouteDelete = db.transaction((encodedKey, now = Date.now(), options = {}) => {
+  const existing = stmts.getRoute.get(encodedKey)
+  if (!existing) {
+    return { route: null, previous: null, affectedAccounts: [] }
+  }
+
+  const deltas = new Map()
+  if (isUsageCounted(existing)) {
+    deltas.set(existing.account_id, (deltas.get(existing.account_id) ?? 0) - existing.size_bytes)
+  }
+
+  const { metadataVersion, updatedAt } = withVersion(existing, now)
+  stmts.updateRouteState.run({
+    encoded_key: encodedKey,
+    state: ROUTE_STATE.DELETED,
+    updated_at: updatedAt,
+    deleted_at: now,
+    metadata_version: metadataVersion,
+    sync_state: ROUTE_SYNC_STATE.PENDING_SYNC,
+    reconcile_status: options.reconcileStatus ?? ROUTE_RECONCILE_STATUS.HEALTHY,
+    backend_missing_since: options.backendMissing ? (existing.backend_missing_since ?? now) : null,
+    last_reconciled_at: now,
+  })
+
+  applyAccountAdjustments(deltas)
+
+  return {
+    route: stmts.getRoute.get(encodedKey),
+    previous: existing,
+    affectedAccounts: fetchAffectedAccounts([...deltas.keys()]),
+  }
+})
+
+export const markRouteMissingBackend = db.transaction((encodedKey, now = Date.now()) => {
+  const existing = stmts.getRoute.get(encodedKey)
+  if (!existing || existing.state === ROUTE_STATE.DELETED) {
+    return { route: existing ?? null, previous: existing ?? null, affectedAccounts: [] }
+  }
+
+  const deltas = new Map()
+  if (isUsageCounted(existing) && existing.state !== ROUTE_STATE.MISSING_BACKEND) {
+    deltas.set(existing.account_id, (deltas.get(existing.account_id) ?? 0) - existing.size_bytes)
+  }
+
+  const { metadataVersion, updatedAt } = withVersion(existing, now)
+  stmts.updateRouteState.run({
+    encoded_key: encodedKey,
+    state: ROUTE_STATE.MISSING_BACKEND,
+    updated_at: updatedAt,
+    deleted_at: null,
+    metadata_version: metadataVersion,
+    sync_state: ROUTE_SYNC_STATE.PENDING_SYNC,
+    reconcile_status: ROUTE_RECONCILE_STATUS.NEEDS_REVIEW,
+    backend_missing_since: existing.backend_missing_since ?? now,
+    last_reconciled_at: now,
+  })
+
+  applyAccountAdjustments(deltas)
+
+  return {
+    route: stmts.getRoute.get(encodedKey),
+    previous: existing,
+    affectedAccounts: fetchAffectedAccounts([...deltas.keys()]),
+  }
+})
+
+export const upsertReconciledRoute = db.transaction((route) => {
+  const existing = stmts.getRoute.get(route.encoded_key)
+  const now = Date.now()
+  const { metadataVersion, updatedAt } = withVersion(existing, now)
+  const normalized = normalizeRouteForWrite({
+    ...route,
+    metadata_version: route.metadata_version ?? metadataVersion,
+    updated_at: route.updated_at ?? updatedAt,
+    sync_state: route.sync_state ?? ROUTE_SYNC_STATE.PENDING_SYNC,
+    last_reconciled_at: route.last_reconciled_at ?? now,
+  }, existing)
+
+  stmts.upsertRoute.run(normalized)
+  return stmts.getRoute.get(normalized.encoded_key)
+})
 
 export function upsertMultipartUpload(upload) {
   stmts.upsertMultipartUpload.run({
-    upload_id:  upload.upload_id,
+    upload_id: upload.upload_id,
     account_id: upload.account_id,
-    bucket:     upload.bucket,
+    bucket: upload.bucket,
     object_key: upload.object_key,
+    backend_key: upload.backend_key ?? upload.object_key,
     started_at: upload.started_at ?? Date.now(),
   })
 }
@@ -194,4 +656,16 @@ export function deactivateMissingAccounts(accountIds) {
 
   const placeholders = ids.map(() => '?').join(', ')
   db.prepare(`UPDATE accounts SET active = 0 WHERE account_id NOT IN (${placeholders})`).run(...ids)
+}
+
+export function getActiveObjectStatsByBucket() {
+  return stmts.activeObjectStatsByBucket.all()
+}
+
+export function getLogicalBytesByBucketAccount() {
+  return stmts.logicalBytesByBucketAccount.all()
+}
+
+export function getRouteStateCountsByAccount() {
+  return stmts.stateCountsByAccount.all()
 }

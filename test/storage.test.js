@@ -1,5 +1,6 @@
 /**
- * test/storage.test.js - T3 verification
+ * test/storage.test.js
+ * Storage-layer verification for metadata control plane behavior.
  */
 
 import { mkdirSync, existsSync, unlinkSync } from 'fs'
@@ -23,22 +24,28 @@ const GB = 1024 * MB
 
 const {
   db,
-  upsertAccount,
+  commitUploadedObjectMetadata,
+  finalizeRouteDelete,
   getAllActiveAccounts,
-  setUsedBytesAbsolute,
-  upsertRoute,
-  getRoute,
-  deleteRoute,
   getAllRoutes,
+  getRoute,
+  listVisibleObjectsPage,
+  markRouteMissingBackend,
+  ROUTE_STATE,
+  setUsedBytesAbsolute,
+  upsertAccount,
+  upsertRoute,
+  deleteRoute,
   countRoutes,
 } = await import('../src/db.js')
 const { cacheGet, cacheSet, cacheDelete, cacheClear } = await import('../src/cache.js')
 const {
   selectAccountForUpload,
-  recordUpload,
   StorageFullError,
   reloadAccountsFromSQLite,
+  syncAccountsFromRows,
 } = await import('../src/accountPool.js')
+const { buildBackendKey } = await import('../src/metadata.js')
 
 function seedAccounts() {
   upsertAccount({
@@ -96,18 +103,97 @@ async function testSelectAccount() {
   }
 }
 
-async function testRecordUpload() {
+async function testCommitUploadMetadata() {
+  try {
+    const committed = commitUploadedObjectMetadata({
+      encoded_key: 'dGVzdC9sb2dpY2FsL2EudHh0',
+      account_id: 'acc1',
+      bucket: 'test',
+      object_key: 'logical/a.txt',
+      backend_key: buildBackendKey('test', 'logical/a.txt'),
+      size_bytes: 100 * MB,
+      etag: 'etag-a',
+      last_modified: Date.now(),
+      content_type: 'text/plain',
+      uploaded_at: Date.now(),
+      updated_at: Date.now(),
+      instance_id: 'test',
+    })
+    syncAccountsFromRows(committed.affectedAccounts)
+
+    const route = getRoute('dGVzdC9sb2dpY2FsL2EudHh0')
+    const account = getAllActiveAccounts().find((entry) => entry.account_id === 'acc1')
+
+    if (!route || route.state !== ROUTE_STATE.ACTIVE) {
+      throw new Error(`route=${JSON.stringify(route)}`)
+    }
+    if (route.backend_key !== 'test/logical/a.txt') {
+      throw new Error(`backend_key=${route.backend_key}`)
+    }
+    if (account.used_bytes !== 100 * MB) {
+      throw new Error(`used_bytes=${account.used_bytes}`)
+    }
+
+    ok('commitUploadedObjectMetadata luu route ACTIVE va cap nhat used_bytes giao dich')
+  } catch (err) {
+    fail('commitUploadedObjectMetadata', err)
+  }
+}
+
+async function testVisibleListAndTombstone() {
+  try {
+    commitUploadedObjectMetadata({
+      encoded_key: 'dGVzdC9sb2dpY2FsL2IudHh0',
+      account_id: 'acc1',
+      bucket: 'test',
+      object_key: 'logical/b.txt',
+      backend_key: buildBackendKey('test', 'logical/b.txt'),
+      size_bytes: 50 * MB,
+      etag: 'etag-b',
+      last_modified: Date.now(),
+      uploaded_at: Date.now(),
+      updated_at: Date.now(),
+      instance_id: 'test',
+    })
+
+    const deleted = finalizeRouteDelete('dGVzdC9sb2dpY2FsL2IudHh0', Date.now())
+    syncAccountsFromRows(deleted.affectedAccounts)
+
+    const visible = listVisibleObjectsPage('test', { lowerBound: '', limit: 10 })
+    const deletedRoute = getRoute('dGVzdC9sb2dpY2FsL2IudHh0')
+
+    if (visible.some((route) => route.encoded_key === 'dGVzdC9sb2dpY2FsL2IudHh0')) {
+      throw new Error('deleted object still visible in list')
+    }
+    if (!deletedRoute || deletedRoute.state !== ROUTE_STATE.DELETED || deletedRoute.deleted_at === null) {
+      throw new Error(`deletedRoute=${JSON.stringify(deletedRoute)}`)
+    }
+
+    ok('listVisibleObjectsPage chi hien object ACTIVE, tombstone bi an khoi list')
+  } catch (err) {
+    fail('listVisibleObjectsPage / tombstone', err)
+  }
+}
+
+async function testMissingBackendTransition() {
   try {
     const before = getAllActiveAccounts().find((account) => account.account_id === 'acc1')
-    recordUpload('acc1', 100 * MB)
+    const result = markRouteMissingBackend('dGVzdC9sb2dpY2FsL2EudHh0', Date.now())
+    syncAccountsFromRows(result.affectedAccounts)
+
+    const route = getRoute('dGVzdC9sb2dpY2FsL2EudHh0')
     const after = getAllActiveAccounts().find((account) => account.account_id === 'acc1')
-    if (after.used_bytes === before.used_bytes + 100 * MB) {
-      ok('recordUpload acc1 +100MB -> updateUsedBytes dung')
-    } else {
-      fail('recordUpload', new Error(`Expected ${before.used_bytes + 100 * MB}, got ${after.used_bytes}`))
+
+    if (route.state !== ROUTE_STATE.MISSING_BACKEND) {
+      throw new Error(`state=${route.state}`)
     }
+    if (after.used_bytes >= before.used_bytes) {
+      throw new Error(`before=${before.used_bytes} after=${after.used_bytes}`)
+    }
+
+    ok('markRouteMissingBackend danh dau drift va giam used_bytes da tinh')
   } catch (err) {
-    fail('recordUpload', err)
+    fail('markRouteMissingBackend', err)
   }
 }
 
@@ -164,15 +250,17 @@ async function testStorageFullError() {
   }
 }
 
-async function testRouteCRUD() {
+async function testLegacyRouteCrud() {
   try {
     const route = {
       encoded_key: 'dGVzdC9zYW1wbGU',
       account_id: 'acc1',
       bucket: 'test',
       object_key: 'sample.txt',
+      backend_key: 'test/sample.txt',
       size_bytes: 2048,
       uploaded_at: Date.now(),
+      updated_at: Date.now(),
       instance_id: 'test',
     }
     upsertRoute(route)
@@ -182,7 +270,7 @@ async function testRouteCRUD() {
     if (!getAllRoutes().find((row) => row.encoded_key === route.encoded_key)) throw new Error('getAllRoutes miss')
     deleteRoute(route.encoded_key)
     if (getRoute(route.encoded_key) !== undefined) throw new Error('still exists after delete')
-    ok('upsertRoute / getRoute / countRoutes / getAllRoutes / deleteRoute - CRUD OK')
+    ok('upsertRoute / getRoute / countRoutes / getAllRoutes / deleteRoute - low-level CRUD OK')
   } catch (err) {
     fail('Route CRUD', err)
   }
@@ -195,12 +283,14 @@ async function main() {
 
   await testUpsertAndOrder()
   await testSelectAccount()
-  await testRecordUpload()
+  await testCommitUploadMetadata()
+  await testVisibleListAndTombstone()
+  await testMissingBackendTransition()
   await testCacheSetGet()
   await testCacheDelete()
   await testMigrateIdempotent()
   await testStorageFullError()
-  await testRouteCRUD()
+  await testLegacyRouteCrud()
 
   console.log('─'.repeat(60))
   console.log(`Results: ${passed} passed, ${failed} failed`)

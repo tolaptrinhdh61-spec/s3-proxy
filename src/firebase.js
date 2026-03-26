@@ -1,23 +1,10 @@
 /**
  * src/firebase.js
  * Firebase Realtime Database layer using REST API + SSE (no firebase-admin SDK).
- * All operations use fetch() with ?auth=FIREBASE_DB_SECRET.
- * SSE listener uses 'eventsource' npm package.
- *
- * Exported functions:
- *   rtdbGet(path) → parsed JSON or null
- *   rtdbSet(path, value) → void
- *   rtdbPatch(path, value) → void
- *   rtdbDelete(path) → void
- *   rtdbPush(path, value) → generated key string
- *   rtdbListen(path, onData, onError) → { close() }
- *   rtdbBatchPatch(updates) → void (auto-chunks by RTDB_SYNC_BATCH_SIZE)
  */
 
 import EventSource from 'eventsource'
 import config from './config.js'
-
-// ─── Internal helpers ────────────────────────────────────────────────────────
 
 function buildUrl(path) {
   const cleanPath = path.replace(/\/+$/, '')
@@ -30,17 +17,17 @@ async function rtdbFetch(method, path, body) {
     method,
     headers: { 'Content-Type': 'application/json' },
   }
+
   if (body !== undefined) {
     options.body = JSON.stringify(body)
   }
 
   const res = await fetch(url, options)
-
   if (res.status === 404) return null
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
-    throw new Error(`RTDB ${method} ${path} → HTTP ${res.status}: ${text}`)
+    throw new Error(`RTDB ${method} ${path} -> HTTP ${res.status}: ${text}`)
   }
 
   const text = await res.text()
@@ -52,8 +39,6 @@ async function rtdbFetch(method, path, body) {
     return null
   }
 }
-
-// ─── Exported functions ──────────────────────────────────────────────────────
 
 export async function rtdbGet(path) {
   return rtdbFetch('GET', path)
@@ -68,29 +53,12 @@ export async function rtdbPatch(path, value) {
 }
 
 export async function rtdbDelete(path) {
-  const url = buildUrl(path)
-  const res = await fetch(url, { method: 'DELETE' })
-  if (!res.ok && res.status !== 404) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`RTDB DELETE ${path} → HTTP ${res.status}: ${text}`)
-  }
+  await rtdbFetch('DELETE', path)
 }
 
 export async function rtdbPush(path, value) {
-  const url = buildUrl(path)
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(value),
-  })
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '')
-    throw new Error(`RTDB PUSH ${path} → HTTP ${res.status}: ${text}`)
-  }
-
-  const json = await res.json()
-  return json.name
+  const response = await rtdbFetch('POST', path, value)
+  return response?.name ?? ''
 }
 
 export function rtdbListen(path, onData, onError) {
@@ -108,10 +76,10 @@ export function rtdbListen(path, onData, onError) {
         return
       }
       if (eventType === 'cancel' || eventType === 'auth_revoked') {
-        const err = new Error(`RTDB SSE ${eventType} on ${path}`)
-        onError(err)
+        onError(new Error(`RTDB SSE ${eventType} on ${path}`))
         return
       }
+
       const parsed = JSON.parse(event.data)
       onData(eventType, parsed)
     } catch (err) {
@@ -144,7 +112,6 @@ export async function rtdbBatchPatch(updates) {
 
   for (let i = 0; i < entries.length; i += chunkSize) {
     const chunk = entries.slice(i, i + chunkSize)
-    const chunkObj = Object.fromEntries(chunk)
-    await rtdbFetch('PATCH', '/', chunkObj)
+    await rtdbFetch('PATCH', '/', Object.fromEntries(chunk))
   }
 }
