@@ -1,3 +1,19 @@
+## [2026-03-26 17:05] — Fix critical follow-up sau audit (delete race, multipart complete, account deactivation)
+
+**Loại:** fix  
+**Tóm tắt yêu cầu:** rà soát audit bug/compat và xử lý các lỗi critical gây sai hành vi runtime  
+**Nội dung thay đổi:**
+
+- File `src/routes/s3.js`: bỏ xóa cache sớm trong luồng `DELETE /:bucket/*` (không còn `cacheDelete` ngay sau `markRouteDeleting`) để giảm cửa sổ trả 404 tạm thời khi upstream delete chưa hoàn tất.
+- File `src/routes/s3.js`: thêm `readBackendObjectMetadataWithRetry()` dùng `withRetry` (3 attempts, backoff ngắn) để tránh false 500 khi HEAD ngay sau complete multipart bị trễ propagate.
+- File `src/db.js`: sửa `deactivateMissingAccounts([])` thành no-op thay vì deactivate toàn bộ accounts khi đầu vào rỗng.
+- File `test/storage.test.js`: thêm test regression `testDeactivateMissingAccountsEmptyInput`.
+- File `CHANGE_LOGS.md`: dọn duplicate entries để log kỹ thuật không lặp.
+
+**Ghi chú kỹ thuật:** thay đổi này tập trung vào tính đúng đắn runtime và độ ổn định trong tình huống concurrency/eventual consistency với các backend S3-compatible.
+
+---
+
 ## [2026-03-26 16:10] — Per-account S3 compatibility + fix import validation
 
 **Loại:** fix/feat  
@@ -12,30 +28,6 @@
 - File `README.md`: cập nhật ví dụ account payload với các field tương thích mới.
 
 **Ghi chú kỹ thuật:** thay đổi này giúp proxy linh hoạt hơn khi làm việc đồng thời với nhiều nhà cung cấp S3-compatible có yêu cầu khác nhau về addressing style và payload signing.
-
----
-
-## [2026-03-26 14:45] — Fix trailing slash bucket URL cho PocketBase
-
-**Loại:** fix  
-**Tóm tắt yêu cầu:** PocketBase gửi LIST request dạng `/bucket/?list-type=2` (có trailing slash), Fastify không match route `GET /:bucket` nên trả 404  
-**Nội dung thay đổi:**
-
-- File `src/index.js`: thêm `ignoreTrailingSlash: true` vào Fastify init options. Fastify sẽ tự normalize `/bucket/` thành `/bucket` trước khi route matching.
-
-**Ghi chú kỹ thuật:** PocketBase dùng AWS SDK, SDK tự thêm trailing slash vào bucket URL khi gọi ListObjectsV2. Option `ignoreTrailingSlash` là cách chuẩn của Fastify để xử lý trường hợp này, không cần thêm route mirror.
-
----
-
-## [2026-03-26 14:30] — Fix auth PocketBase AWS SigV4
-
-**Loại:** fix  
-**Tóm tắt yêu cầu:** PocketBase kết nối S3 proxy bị lỗi 403 AccessDenied vì proxy không hiểu AWS SigV4 Authorization header  
-**Nội dung thay đổi:**
-
-- File `src/plugins/auth.js`: thêm hàm `extractApiKey()` để parse 3 format xác thực: `x-api-key`, `Authorization: Bearer`, và `Authorization: AWS4-HMAC-SHA256 Credential=<key>/...`. Trước đây chỉ hỗ trợ 2 format đầu, dẫn đến PocketBase (dùng AWS SDK gửi SigV4) bị từ chối.
-
-**Ghi chú kỹ thuật:** PocketBase dùng AWS SDK để kết nối S3, SDK tự động ký request theo chuẩn SigV4 với Access Key ID là `PROXY_API_KEY`. Header Authorization có dạng `AWS4-HMAC-SHA256 Credential=<accessKeyId>/<date>/<region>/s3/aws4_request, SignedHeaders=..., Signature=...`. Fix này extract phần `accessKeyId` ra và so sánh với `PROXY_API_KEY`.
 
 ---
 

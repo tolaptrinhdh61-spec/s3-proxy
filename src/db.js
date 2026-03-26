@@ -656,7 +656,6 @@ export function deactivateMissingAccounts(accountIds) {
   const ids = [...new Set(accountIds)]
 
   if (ids.length === 0) {
-    db.prepare('UPDATE accounts SET active = 0').run()
     return
   }
 

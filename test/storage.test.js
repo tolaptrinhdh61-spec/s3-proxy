@@ -37,6 +37,7 @@ const {
   upsertRoute,
   deleteRoute,
   countRoutes,
+  deactivateMissingAccounts,
 } = await import('../src/db.js')
 const { cacheGet, cacheSet, cacheDelete, cacheClear } = await import('../src/cache.js')
 const {
@@ -250,6 +251,21 @@ async function testStorageFullError() {
   }
 }
 
+async function testDeactivateMissingAccountsEmptyInput() {
+  try {
+    seedAccounts()
+    deactivateMissingAccounts([])
+    const active = getAllActiveAccounts()
+    if (active.length >= 2) {
+      ok('deactivateMissingAccounts([]) khong deactivate toan bo accounts')
+    } else {
+      fail('deactivateMissingAccounts([])', new Error(`active=${active.length}`))
+    }
+  } catch (err) {
+    fail('deactivateMissingAccounts([])', err)
+  }
+}
+
 async function testLegacyRouteCrud() {
   try {
     const route = {
@@ -290,6 +306,7 @@ async function main() {
   await testCacheDelete()
   await testMigrateIdempotent()
   await testStorageFullError()
+  await testDeactivateMissingAccountsEmptyInput()
   await testLegacyRouteCrud()
 
   console.log('─'.repeat(60))

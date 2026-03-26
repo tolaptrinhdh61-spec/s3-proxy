@@ -1,6 +1,6 @@
-[2026-03-26 16:10] (fix): bo sung tuong thich da nha cung cap S3-compatible theo tung account
+[2026-03-26 17:05] (fix): xu ly follow-up critical sau audit tong the
 
-- them addressingStyle (path|virtual) va payloadSigningMode (unsigned|signed) cho tung account
-- cap nhat SigV4 de ho tro virtual-hosted style va tuy chon ky payload strict
-- sua validation import accounts de 1 record loi khong gay skip sai cac record con lai
-- da bo sung test cho virtual-hosted signing va import accounts voi field moi
+- sua race delete: khong xoa cache som truoc khi upstream DELETE hoan tat
+- them retry metadata HEAD sau complete multipart de tranh false 500
+- sua deactivateMissingAccounts([]) thanh no-op, tranh tat het account
+- bo sung test regression va don dep changelog bi duplicate

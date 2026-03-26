@@ -40,6 +40,7 @@ import {
   syncAccountsFromRows,
 } from '../accountPool.js'
 import { proxyRequest } from '../utils/sigv4.js'
+import { withRetry } from '../utils/retry.js'
 import { sendAlert } from '../utils/webhook.js'
 import {
   buildCompleteMultipartUploadResult,
@@ -370,6 +371,25 @@ async function readBackendObjectMetadata(account, backendKey, requestId) {
   }
 
   return objectMetadataFromHeaders(response.headers)
+}
+
+async function readBackendObjectMetadataWithRetry(account, backendKey, requestId) {
+  return withRetry(async () => {
+    const metadata = await readBackendObjectMetadata(account, backendKey, requestId)
+    if (!metadata) {
+      const err = new Error('Backend object metadata not visible yet')
+      err.code = 'BACKEND_METADATA_NOT_READY'
+      err.statusCode = 503
+      throw err
+    }
+    return metadata
+  }, {
+    maxAttempts: 3,
+    baseDelayMs: 75,
+  }).catch((err) => {
+    if (err?.code === 'BACKEND_METADATA_NOT_READY') return null
+    throw err
+  })
 }
 
 async function chooseUploadTarget(bucket, objectKey, encodedKey, sizeBytes) {
@@ -707,10 +727,7 @@ export default async function s3Routes(fastify, _opts) {
       return xmlReply(reply, 404, buildErrorXml('NoSuchKey', 'Account not found', reqId))
     }
 
-    const deletingRoute = markRouteDeleting(encodedKey, Date.now())
-    if (deletingRoute) {
-      cacheDelete(encodedKey)
-    }
+    markRouteDeleting(encodedKey, Date.now())
 
     const upstream = await proxyRequest({
       account,
@@ -883,7 +900,7 @@ export default async function s3Routes(fastify, _opts) {
 
       let backendMetadata
       try {
-        backendMetadata = await readBackendObjectMetadata(account, multipart.backend_key, reqId)
+        backendMetadata = await readBackendObjectMetadataWithRetry(account, multipart.backend_key, reqId)
       } catch (err) {
         metrics.metadataCommitFailuresTotal.inc({ stage: 'post_complete_head' })
         request.log.error({ err, uploadId }, 'failed to read metadata after multipart completion')

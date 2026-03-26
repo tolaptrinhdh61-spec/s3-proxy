@@ -1,3 +1,11 @@
+## [2026-03-26 17:05] — Sửa gói lỗi critical sau audit tổng thể
+
+**Yêu cầu gốc của user:** xem xét audit bug/compatibility và điều chỉnh lại các điểm cần fix ngay.  
+**Kết quả thực hiện:** đã sửa 3 lỗi quan trọng gồm (1) giảm race trong luồng DELETE để tránh 404 tạm thời, (2) thêm retry metadata lookup sau complete multipart để tránh false 500 do backend propagate chậm, và (3) chặn việc deactivate toàn bộ account khi danh sách RTDB tạm thời rỗng; đồng thời bổ sung test regression và dọn changelog bị lặp.  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 16:10] — Bổ sung tương thích nhiều S3-compatible endpoint
 
 **Yêu cầu gốc của user:** kiểm tra bug tổng thể và bổ sung để dùng tốt với nhiều S3-compatible endpoint  
