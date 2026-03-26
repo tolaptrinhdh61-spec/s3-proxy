@@ -1,5 +1,5 @@
-[2026-03-26 11:47] (fix): sửa SigV4 cho Supabase S3 endpoint
+[2026-03-26 12:01] (chore): them kich ban kiem thu multi-account
 
-- Giữ nguyên base path /storage/v1/s3 khi dựng URL upstream trong src/utils/sigv4.js
-- Không strip x-amz-content-sha256 khỏi canonical signing để tránh SignatureDoesNotMatch
-- Bổ sung test trong test/utils.test.js và verify PUT/GET thật với bucket s3-proxy-dem9
+- Them test/multi-account.test.js de kiem thu phan bo object qua nhieu account, threshold switch, overwrite, GET, HEAD, LIST, DELETE
+- Them docs/multi-account-test-scenarios.vi.md mo ta cac kich ban va cach chay npm run test:multi-account
+- Cap nhat package.json de noi test moi vao npm test

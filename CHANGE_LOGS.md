@@ -1,3 +1,17 @@
+## [2026-03-26 12:01] — Them kich ban kiem thu multi-account va luong S3 thong dung
+
+**Loại:** feat  
+**Tóm tắt yêu cầu:** viet cac kich ban kiem thu de cau hinh nhieu account, kiem tra viec luu object duoc chuyen sang account khac, va thu cac luong S3 thuong gap nhu tao, get, head, list, delete  
+**Nội dung thay đổi:**
+
+- File `test/multi-account.test.js`: them integration test voi 2 fake S3 upstream de kiem tra create/delete bucket rong, phan bo object qua 2 account, GET/HEAD/LIST tren multi-account, delete object + tombstone, bucket not empty, threshold switch, va overwrite giu nguyen account cu.
+- File `docs/multi-account-test-scenarios.vi.md`: them tai lieu mo ta chien luoc chon account, cac kich ban tu dong da co, ky vong tung buoc, va huong mo rong them.
+- File `package.json`: them script `test:multi-account` va noi suite moi vao `npm test`.
+
+**Ghi chú kỹ thuật:** test moi xac nhan behavior hien tai la `least-used + QUOTA_THRESHOLD`, khong phai round-robin cung. Da verify local bang `node test/multi-account.test.js` va `npm test` deu pass.
+
+---
+
 ## [2026-03-26 11:47] — Fix SigV4 path + payload signing cho Supabase
 
 **Loại:** fix  

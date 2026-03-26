@@ -9,7 +9,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node test/utils.test.js && node test/storage.test.js && node test/server.test.js",
+    "test": "node test/utils.test.js && node test/storage.test.js && node test/server.test.js && node test/multi-account.test.js",
+    "test:multi-account": "node test/multi-account.test.js",
     "test:firebase": "node test/firebase.test.js"
   },
   "dependencies": {

@@ -1,3 +1,11 @@
+## [2026-03-26 12:01] — Them kich ban kiem thu nhieu account va cac luong S3 co ban
+
+**Yêu cầu gốc của user:** viet cac kich ban kiem thu de cau hinh nhieu account, kiem tra viec luu co chuyen qua account khac, va thu cac luong thuong gap nhu tao, get, xoa  
+**Kết quả thực hiện:** them file `test/multi-account.test.js` de test tu dong voi 2 fake upstream, bao gom create/delete bucket, upload phan bo qua nhieu account, GET/HEAD/LIST, delete object, skip account sap day, overwrite giu nguyen account; them tai lieu `docs/multi-account-test-scenarios.vi.md`; cap nhat `package.json` voi script `test:multi-account` va noi vao `npm test`.  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 11:47] — Sửa lỗi upload Supabase trả 404 và SignatureDoesNotMatch
 
 **Yêu cầu gốc của user:** xem lỗi khi `PUT /s3-proxy-dem9/hello.txt` trả `404`, sau đó kiểm tra tiếp lỗi `SignatureDoesNotMatch`, và cập nhật 3 file ghi nhận theo checklist opushforce  
