@@ -41,6 +41,7 @@ const fastify = Fastify({
   logger: log,
   genReqId: () => randomBytes(6).toString('base64url').slice(0, 10),
   bodyLimit: 100 * 1024 * 1024,
+  ignoreTrailingSlash: true,
 })
 
 let routesListener = null

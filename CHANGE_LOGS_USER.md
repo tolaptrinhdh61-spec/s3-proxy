@@ -6,6 +6,14 @@
 
 ---
 
+## [2026-03-26 14:30] — PocketBase không kết nối được S3 proxy
+
+**Yêu cầu gốc của user:** PocketBase báo lỗi "Failed to establish S3 connection" và log cho thấy 403 AccessDenied khi test S3 từ Settings  
+**Kết quả thực hiện:** sửa `src/plugins/auth.js` để hỗ trợ AWS SigV4 Authorization header mà PocketBase gửi lên  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 13:48] — Tạo Postman collection để test production
 
 **Yêu cầu gốc của user:** tạo `postman.json` để kiểm thử toàn bộ luồng nghiệp vụ và dùng làm tài liệu test trên môi trường production  
