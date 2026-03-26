@@ -8,14 +8,15 @@
   },
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch src/index.js",
+    "test": "node test/utils.test.js && node test/storage.test.js && node test/server.test.js",
+    "test:firebase": "node test/firebase.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3",
     "@aws-sdk/signature-v4": "^3",
     "@aws-crypto/sha256-js": "^5",
     "@smithy/protocol-http": "^3",
-    "@fastify/close-grace": "^1",
     "@fastify/rate-limit": "^9",
     "better-sqlite3": "^9",
     "eventsource": "^2",

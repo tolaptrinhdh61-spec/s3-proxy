@@ -1,12 +1,12 @@
 /**
  * src/quotaPoller.js
- * Periodic background poller — S3 ListObjectsV2, updates SQLite if diff > 5%.
+ * Periodic background poller - S3 ListObjectsV2, updates SQLite if diff > 5%.
  * Never crashes the process.
  */
 
 import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3'
 import { getAllActiveAccounts, setUsedBytesAbsolute } from './db.js'
-import { getAccount } from './accountPool.js'
+import { setAccountUsedBytes } from './accountPool.js'
 import config from './config.js'
 
 let pollerTimer = null
@@ -14,10 +14,10 @@ let running = false
 
 async function pollAccount(account) {
   const client = new S3Client({
-    endpoint:    account.endpoint,
-    region:      account.region,
+    endpoint: account.endpoint,
+    region: account.region,
     credentials: {
-      accessKeyId:     account.access_key_id,
+      accessKeyId: account.access_key_id,
       secretAccessKey: account.secret_key,
     },
     forcePathStyle: true,
@@ -27,15 +27,19 @@ async function pollAccount(account) {
   let continuationToken
 
   do {
-    const cmd = new ListObjectsV2Command({
-      Bucket:            account.bucket,
-      MaxKeys:           1000,
+    const command = new ListObjectsV2Command({
+      Bucket: account.bucket,
+      MaxKeys: 1000,
       ContinuationToken: continuationToken,
     })
-    const response = await client.send(cmd)
+    const response = await client.send(command)
+
     if (response.Contents) {
-      for (const obj of response.Contents) totalBytes += obj.Size ?? 0
+      for (const object of response.Contents) {
+        totalBytes += object.Size ?? 0
+      }
     }
+
     continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined
   } while (continuationToken)
 
@@ -47,17 +51,17 @@ async function pollAccount(account) {
 
   if (diff > threshold) {
     process.stderr.write(
-      `[quotaPoller] WARN: ${account.account_id} stored=${stored} polled=${totalBytes} diff=${diff} → updating\n`
+      `[quotaPoller] WARN: ${account.account_id} stored=${stored} polled=${totalBytes} diff=${diff} -> updating\n`
     )
     setUsedBytesAbsolute(account.account_id, totalBytes)
-    const inMem = getAccount(account.account_id)
-    if (inMem) inMem.used_bytes = totalBytes
+    setAccountUsedBytes(account.account_id, totalBytes)
   }
 }
 
 async function runPollCycle() {
   if (running) return
   running = true
+
   try {
     const accounts = getAllActiveAccounts()
     for (const account of accounts) {
@@ -76,17 +80,19 @@ async function runPollCycle() {
 
 export function startQuotaPoller() {
   if (pollerTimer) return
+
   pollerTimer = setInterval(() => {
     runPollCycle().catch(() => {})
   }, config.QUOTA_POLL_INTERVAL_MS)
+
   if (pollerTimer.unref) pollerTimer.unref()
   process.stderr.write(`[quotaPoller] started, interval=${config.QUOTA_POLL_INTERVAL_MS}ms\n`)
 }
 
 export function stopQuotaPoller() {
-  if (pollerTimer) {
-    clearInterval(pollerTimer)
-    pollerTimer = null
-    process.stderr.write('[quotaPoller] stopped\n')
-  }
+  if (!pollerTimer) return
+
+  clearInterval(pollerTimer)
+  pollerTimer = null
+  process.stderr.write('[quotaPoller] stopped\n')
 }

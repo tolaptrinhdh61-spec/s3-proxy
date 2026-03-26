@@ -1,3 +1,16 @@
+## [2026-03-26 08:34] — Sửa các lỗi còn lại để project chạy/test được
+
+**Yêu cầu gốc của user:** "tôi đã tạo lại, kiểm tra lại và xử lý các phần còn lại giúp tôi"  
+**Kết quả thực hiện:**
+- Kiểm tra lại toàn bộ trạng thái sau khi `src/config.js` đã được tạo lại
+- Sửa lỗi bootstrap khiến `src/index.js` không boot được và loại bỏ dependency `@fastify/close-grace` không tồn tại
+- Sửa các lỗi runtime ở route S3: upload retry, GET stream response, LIST object, lookup account, multipart flow, parser cho binary upload
+- Sửa lớp storage/account pool để reload state cục bộ ổn định hơn và quota poll không làm lệch state in-memory
+- Cập nhật `package.json`, tạo `package-lock.json`, thêm test script và bổ sung `test/server.test.js`
+- Chạy lại kiểm chứng local: `npm test` pass, smoke boot entrypoint thành công với env giả lập  
+**Trạng thái:** ✅ Hoàn thành
+
+---
 ## [2025-03-25 12:00] — Làm tiếp Task 4+5+6 (Utilities, Routes, Bootstrap)
 
 **Yêu cầu gốc của user:** "Đọc codebase, làm tiếp task03 giúp tôi" — T3 đã xong, tiếp tục T4+T5+T6  
@@ -35,3 +48,4 @@
 **Trạng thái:** ✅ Hoàn thành
 
 ---
+

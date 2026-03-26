@@ -68,7 +68,9 @@ const stmts = {
       (@account_id, @access_key_id, @secret_key, @endpoint, @region, @bucket,
        @quota_bytes, @used_bytes, @active, @added_at)
   `),
-  getAllActiveAccounts: db.prepare(`SELECT * FROM accounts WHERE active = 1 ORDER BY used_bytes ASC`),
+  getAllAccounts: db.prepare(`SELECT * FROM accounts ORDER BY used_bytes ASC, account_id ASC`),
+  getAllActiveAccounts: db.prepare(`SELECT * FROM accounts WHERE active = 1 ORDER BY used_bytes ASC, account_id ASC`),
+  getAccountById: db.prepare(`SELECT * FROM accounts WHERE account_id = ?`),
   updateUsedBytes: db.prepare(`UPDATE accounts SET used_bytes = MAX(0, used_bytes + @delta) WHERE account_id = @account_id`),
   setUsedBytesAbsolute: db.prepare(`UPDATE accounts SET used_bytes = @bytes WHERE account_id = @account_id`),
   upsertRoute: db.prepare(`
@@ -80,6 +82,12 @@ const stmts = {
   getRoute: db.prepare(`SELECT * FROM routes WHERE encoded_key = ?`),
   deleteRoute: db.prepare(`DELETE FROM routes WHERE encoded_key = ?`),
   getAllRoutes: db.prepare(`SELECT * FROM routes ORDER BY uploaded_at DESC`),
+  listRoutesByBucket: db.prepare(`
+    SELECT * FROM routes
+    WHERE bucket = @bucket
+      AND object_key LIKE @prefix || '%'
+    ORDER BY object_key ASC
+  `),
   countRoutes: db.prepare(`SELECT COUNT(*) as count FROM routes`),
   upsertMultipartUpload: db.prepare(`
     INSERT OR REPLACE INTO multipart_uploads
@@ -106,8 +114,16 @@ export function upsertAccount(account) {
   })
 }
 
+export function getAllAccounts() {
+  return stmts.getAllAccounts.all()
+}
+
 export function getAllActiveAccounts() {
   return stmts.getAllActiveAccounts.all()
+}
+
+export function getAccountById(accountId) {
+  return stmts.getAccountById.get(accountId)
 }
 
 export function updateUsedBytes(accountId, delta) {
@@ -142,6 +158,10 @@ export function getAllRoutes() {
   return stmts.getAllRoutes.all()
 }
 
+export function listRoutesByBucket(bucket, prefix = '') {
+  return stmts.listRoutesByBucket.all({ bucket, prefix })
+}
+
 export function countRoutes() {
   return stmts.countRoutes.get().count
 }
@@ -162,4 +182,16 @@ export function getMultipartUpload(uploadId) {
 
 export function deleteMultipartUpload(uploadId) {
   stmts.deleteMultipartUpload.run(uploadId)
+}
+
+export function deactivateMissingAccounts(accountIds) {
+  const ids = [...new Set(accountIds)]
+
+  if (ids.length === 0) {
+    db.prepare('UPDATE accounts SET active = 0').run()
+    return
+  }
+
+  const placeholders = ids.map(() => '?').join(', ')
+  db.prepare(`UPDATE accounts SET active = 0 WHERE account_id NOT IN (${placeholders})`).run(...ids)
 }

@@ -19,6 +19,9 @@
 
 import { mkdirSync } from 'fs'
 
+process.env.PROXY_API_KEY = process.env.PROXY_API_KEY || 'test'
+process.env.FIREBASE_RTDB_URL = process.env.FIREBASE_RTDB_URL || 'https://dummy.firebaseio.com'
+process.env.FIREBASE_DB_SECRET = process.env.FIREBASE_DB_SECRET || 'dummy'
 process.env.SQLITE_PATH = './data/test-utils-dummy.db'
 mkdirSync('./data', { recursive: true })
 
@@ -192,3 +195,5 @@ async function main() {
 }
 
 main()
+
+

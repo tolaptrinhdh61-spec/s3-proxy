@@ -1,35 +1,45 @@
 /**
  * src/routes/s3.js
  * All S3-compatible route handlers for Fastify.
- *
- * Handles: PUT, GET, HEAD, DELETE, POST (multipart), LIST
- * Auth via preHandler using fastify.authenticate decorator.
- * Body parsing disabled for binary routes — raw streams piped directly.
  */
 
 import { randomBytes } from 'crypto'
 import { Readable } from 'stream'
-import { pipeline } from 'stream/promises'
 
 import { cacheGet, cacheSet, cacheDelete } from '../cache.js'
-import { getRoute, upsertRoute, deleteRoute, getAllActiveAccounts,
-         upsertMultipartUpload, getMultipartUpload, deleteMultipartUpload } from '../db.js'
+import {
+  getRoute,
+  upsertRoute,
+  deleteRoute,
+  getAllActiveAccounts,
+  getAccountById,
+  listRoutesByBucket,
+  upsertMultipartUpload,
+  getMultipartUpload,
+  deleteMultipartUpload,
+} from '../db.js'
 import { rtdbGet, rtdbSet, rtdbDelete } from '../firebase.js'
 import {
-  selectAccountForUpload, recordUpload, recordDelete,
-  reloadAccountsFromRTDB, StorageFullError, getAccountsStats,
+  selectAccountForUpload,
+  recordUpload,
+  recordDelete,
+  reloadAccountsFromRTDB,
+  StorageFullError,
 } from '../accountPool.js'
-import { proxyRequest, resignRequest } from '../utils/sigv4.js'
+import { proxyRequest } from '../utils/sigv4.js'
 import { withRetry } from '../utils/retry.js'
 import { sendAlert } from '../utils/webhook.js'
 import {
-  buildErrorXml, buildListBucketResult,
-  buildInitiateMultipartUploadResult, buildCompleteMultipartUploadResult,
+  buildErrorXml,
+  buildListBucketResult,
+  buildInitiateMultipartUploadResult,
+  buildCompleteMultipartUploadResult,
 } from '../utils/s3Xml.js'
 import { metrics } from './metrics.js'
 import config from '../config.js'
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+const MAX_BUFFERED_UPLOAD_BYTES = 100 * 1024 * 1024
+const UPLOAD_ID_PATTERN = /<UploadId>([^<]+)<\/UploadId>/i
 
 function encodeKey(bucket, objectKey) {
   return Buffer.from(`${bucket}/${objectKey}`).toString('base64url')
@@ -39,13 +49,148 @@ function nanoid(size = 10) {
   return randomBytes(size).toString('base64url').slice(0, size)
 }
 
-/**
- * Look up route: LRU → SQLite → RTDB
- * @param {string} encodedKey
- * @returns {object|null} route object or null
- */
+function normalizeQueryValue(value) {
+  if (Array.isArray(value)) return value[0] ?? ''
+  if (value === undefined || value === null) return ''
+  return String(value)
+}
+
+function hasQueryFlag(query, key) {
+  return Object.prototype.hasOwnProperty.call(query, key)
+}
+
+function createBodyStream(buffer) {
+  return buffer.length > 0 ? Readable.from(buffer) : null
+}
+
+async function readStreamToBuffer(stream, maxBytes = MAX_BUFFERED_UPLOAD_BYTES) {
+  const chunks = []
+  let total = 0
+
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    total += buffer.length
+
+    if (total > maxBytes) {
+      const err = new Error(`Request body exceeds ${maxBytes} bytes`)
+      err.statusCode = 413
+      throw err
+    }
+
+    chunks.push(buffer)
+  }
+
+  return Buffer.concat(chunks)
+}
+
+async function getRequestBodyBuffer(request) {
+  if (Buffer.isBuffer(request.body)) return request.body
+  if (request.body instanceof Uint8Array) return Buffer.from(request.body)
+  if (typeof request.body === 'string') return Buffer.from(request.body)
+  if (request.body === undefined || request.body === null) return Buffer.alloc(0)
+  return readStreamToBuffer(request.raw)
+}
+
+function toReplyBody(body) {
+  if (!body) return ''
+  if (typeof body.pipe === 'function') return body
+  if (typeof Readable.fromWeb === 'function' && typeof body.getReader === 'function') {
+    return Readable.fromWeb(body)
+  }
+  return body
+}
+
+function buildProxyLocation(request, bucket, objectKey) {
+  const protocol = request.protocol || 'http'
+  const host = request.headers.host || `localhost:${config.PORT}`
+  return `${protocol}://${host}/${bucket}/${objectKey}`
+}
+
+function extractUploadId(xml) {
+  const match = UPLOAD_ID_PATTERN.exec(xml)
+  return match?.[1] ?? ''
+}
+
+function encodeContinuationToken(marker) {
+  return Buffer.from(marker).toString('base64url')
+}
+
+function decodeContinuationToken(token) {
+  try {
+    return Buffer.from(token, 'base64url').toString('utf8')
+  } catch {
+    return ''
+  }
+}
+
+function buildListResultFromRoutes(bucket, routes, query) {
+  const prefix = normalizeQueryValue(query.prefix)
+  const delimiter = normalizeQueryValue(query.delimiter)
+  const requestedMaxKeys = parseInt(normalizeQueryValue(query['max-keys']) || '1000', 10)
+  const maxKeys = Number.isFinite(requestedMaxKeys)
+    ? Math.max(1, Math.min(requestedMaxKeys, 1000))
+    : 1000
+  const continuationToken = normalizeQueryValue(query['continuation-token'])
+  const startAfter = decodeContinuationToken(continuationToken) || normalizeQueryValue(query['start-after'])
+
+  const entries = []
+  const seenPrefixes = new Set()
+
+  for (const route of routes) {
+    const objectKey = route.object_key
+    if (startAfter) {
+      if (objectKey <= startAfter) continue
+      if (delimiter && startAfter.endsWith(delimiter) && objectKey.startsWith(startAfter)) continue
+    }
+
+    if (delimiter) {
+      const remainder = objectKey.slice(prefix.length)
+      const delimiterIndex = remainder.indexOf(delimiter)
+      if (delimiterIndex !== -1) {
+        const commonPrefix = `${prefix}${remainder.slice(0, delimiterIndex + delimiter.length)}`
+        if (!seenPrefixes.has(commonPrefix)) {
+          seenPrefixes.add(commonPrefix)
+          entries.push({ type: 'prefix', value: commonPrefix })
+        }
+      } else {
+        entries.push({ type: 'object', value: route })
+      }
+    } else {
+      entries.push({ type: 'object', value: route })
+    }
+  }
+
+  const isTruncated = entries.length > maxKeys
+  const visibleEntries = entries.slice(0, maxKeys)
+  const lastEntry = visibleEntries.at(-1)
+  const nextContinuationToken = isTruncated && lastEntry
+    ? encodeContinuationToken(lastEntry.type === 'object' ? lastEntry.value.object_key : lastEntry.value)
+    : ''
+
+  const objects = visibleEntries
+    .filter(entry => entry.type === 'object')
+    .map(entry => ({
+      key: entry.value.object_key,
+      size: entry.value.size_bytes,
+      lastModified: entry.value.uploaded_at,
+    }))
+
+  const commonPrefixes = visibleEntries
+    .filter(entry => entry.type === 'prefix')
+    .map(entry => entry.value)
+
+  return buildListBucketResult(bucket, objects, {
+    prefix,
+    delimiter,
+    maxKeys,
+    continuationToken,
+    nextContinuationToken,
+    isTruncated,
+    commonPrefixes,
+  })
+}
+
 async function lookupRoute(encodedKey) {
-  // 1. LRU cache
   const cached = cacheGet(encodedKey)
   if (cached) {
     metrics.cacheHitsTotal.inc()
@@ -53,42 +198,42 @@ async function lookupRoute(encodedKey) {
   }
   metrics.cacheMissesTotal.inc()
 
-  // 2. SQLite
   const row = getRoute(encodedKey)
   if (row) {
-    cacheSet(encodedKey, {
-      accountId:  row.account_id,
-      bucket:     row.bucket,
-      objectKey:  row.object_key,
-      sizeBytes:  row.size_bytes,
-    })
-    return { accountId: row.account_id, bucket: row.bucket, objectKey: row.object_key, sizeBytes: row.size_bytes }
+    const route = {
+      accountId: row.account_id,
+      bucket: row.bucket,
+      objectKey: row.object_key,
+      sizeBytes: row.size_bytes,
+    }
+    cacheSet(encodedKey, route)
+    return route
   }
 
-  // 3. RTDB fallback
   try {
     const rtdbRoute = await rtdbGet(`/routes/${encodedKey}`)
     if (rtdbRoute) {
       upsertRoute({
         encoded_key: encodedKey,
-        account_id:  rtdbRoute.accountId,
-        bucket:      rtdbRoute.bucket,
-        object_key:  rtdbRoute.objectKey,
-        size_bytes:  rtdbRoute.sizeBytes ?? 0,
+        account_id: rtdbRoute.accountId,
+        bucket: rtdbRoute.bucket,
+        object_key: rtdbRoute.objectKey,
+        size_bytes: rtdbRoute.sizeBytes ?? 0,
         uploaded_at: rtdbRoute.uploadedAt ?? Date.now(),
         instance_id: rtdbRoute.instanceId ?? '',
       })
-      const val = {
+
+      const route = {
         accountId: rtdbRoute.accountId,
-        bucket:    rtdbRoute.bucket,
+        bucket: rtdbRoute.bucket,
         objectKey: rtdbRoute.objectKey,
         sizeBytes: rtdbRoute.sizeBytes ?? 0,
       }
-      cacheSet(encodedKey, val)
-      return val
+      cacheSet(encodedKey, route)
+      return route
     }
   } catch {
-    // RTDB unreachable — continue to 404
+    // RTDB unreachable - fall through to 404 path.
   }
 
   return null
@@ -106,26 +251,40 @@ function addCorsHeaders(reply) {
     .header('Access-Control-Expose-Headers', 'ETag, Content-Type, Content-Length, Last-Modified')
 }
 
-// Headers forwarded verbatim from Supabase to client
+function buildForwardHeaders(request) {
+  const headers = {}
+
+  for (const [key, value] of Object.entries(request.headers)) {
+    const lower = key.toLowerCase()
+    if (!['host', 'connection', 'x-api-key', 'authorization'].includes(lower)) {
+      headers[lower] = value
+    }
+  }
+
+  headers['x-forwarded-request-id'] = request.id
+  return headers
+}
+
 const FORWARD_RESPONSE_HEADERS = [
   'content-type', 'content-length', 'etag', 'last-modified',
   'cache-control', 'content-disposition', 'x-amz-request-id',
   'x-amz-id-2', 'x-amz-version-id',
 ]
 
-// ─── Plugin ───────────────────────────────────────────────────────────────────
-
 export default async function s3Routes(fastify, _opts) {
-  // CORS preflight
-  fastify.options('/*', async (request, reply) => {
+  fastify.options('/*', async (_request, reply) => {
     addCorsHeaders(reply)
     reply.code(200).send('')
   })
 
-  // Auth preHandler for all S3 routes
   const authHook = { preHandler: [fastify.authenticate] }
 
-  // ── PUT /:bucket/:key* — Upload object ──────────────────────────────────────
+  try {
+    fastify.addContentTypeParser('*', { parseAs: 'buffer' }, (_request, body, done) => done(null, body))
+  } catch {
+    // Parser may already exist in nested test apps.
+  }
+
   fastify.put('/:bucket/*', {
     ...authHook,
     config: { rawBody: true },
@@ -134,12 +293,47 @@ export default async function s3Routes(fastify, _opts) {
     const objectKey = request.params['*']
     const encodedKey = encodeKey(bucket, objectKey)
     const reqId = request.id
-    const sizeBytes = parseInt(request.headers['content-length'] ?? '0', 10) || 0
+    const query = request.query ?? {}
 
     addCorsHeaders(reply)
 
-    // Track metric
-    let operation = 'put_object'
+    if (normalizeQueryValue(query.uploadId) && normalizeQueryValue(query.partNumber)) {
+      const uploadId = normalizeQueryValue(query.uploadId)
+      const partNumber = normalizeQueryValue(query.partNumber)
+      const multipart = getMultipartUpload(uploadId)
+      if (!multipart) {
+        return xmlReply(reply, 404, buildErrorXml('NoSuchUpload', 'The specified upload does not exist.', reqId))
+      }
+
+      const account = getAccountById(multipart.account_id)
+      if (!account) {
+        return xmlReply(reply, 500, buildErrorXml('InternalError', 'Account not found', reqId))
+      }
+
+      const bodyBuffer = await getRequestBodyBuffer(request)
+      const supabaseRes = await proxyRequest({
+        account,
+        method: 'PUT',
+        path: `/${account.bucket}/${multipart.object_key}`,
+        query: { uploadId, partNumber },
+        headers: buildForwardHeaders(request),
+        bodyStream: createBodyStream(bodyBuffer),
+      })
+
+      for (const header of ['etag', 'x-amz-request-id']) {
+        const value = supabaseRes.headers[header]
+        if (value) reply.header(header, value)
+      }
+
+      metrics.requestsTotal.inc({ method: 'PUT', operation: 'upload_part', status_code: supabaseRes.statusCode })
+      reply.code(supabaseRes.statusCode)
+      const body = await supabaseRes.body.text().catch(() => '')
+      return reply.send(body || '')
+    }
+
+    const sizeBytes = parseInt(request.headers['content-length'] ?? '0', 10) || 0
+    const requestBody = await getRequestBodyBuffer(request)
+    const forwardHeaders = buildForwardHeaders(request)
 
     let account
     try {
@@ -155,47 +349,38 @@ export default async function s3Routes(fastify, _opts) {
       throw err
     }
 
-    const path = `/${account.bucket}/${objectKey}`
-    const forwardHeaders = {}
-    for (const [k, v] of Object.entries(request.headers)) {
-      const lower = k.toLowerCase()
-      if (!['host', 'connection', 'x-api-key', 'authorization'].includes(lower)) {
-        forwardHeaders[lower] = v
-      }
-    }
-    forwardHeaders['x-forwarded-request-id'] = reqId
-
     let supabaseRes
     const excludedAccounts = new Set()
 
     try {
       supabaseRes = await withRetry(
         async () => {
-          const res = await proxyRequest({
+          const response = await proxyRequest({
             account,
             method: 'PUT',
-            path,
+            path: `/${account.bucket}/${objectKey}`,
             headers: forwardHeaders,
-            bodyStream: request.raw,
+            bodyStream: createBodyStream(requestBody),
           })
-          if (res.statusCode >= 500) {
-            const err = new Error(`Supabase error ${res.statusCode}`)
-            err.statusCode = res.statusCode
+
+          if (response.statusCode >= 500) {
+            const err = new Error(`Supabase error ${response.statusCode}`)
+            err.statusCode = response.statusCode
             throw err
           }
-          return res
+
+          return response
         },
         {
           maxAttempts: 3,
           baseDelayMs: 100,
           onRetry: (attempt, err) => {
             request.log.warn({ attempt, err: err.message }, 'PUT retry')
-            metrics.retryTotal.inc({ operation })
+            metrics.retryTotal.inc({ operation: 'put_object' })
           },
         }
       )
     } catch (primaryErr) {
-      // Fallback: try another account
       excludedAccounts.add(account.account_id)
       let fallbackAccount
       try {
@@ -207,66 +392,56 @@ export default async function s3Routes(fastify, _opts) {
       metrics.fallbackTotal.inc({ reason: 'supabase_5xx' })
       request.log.warn({ primaryAccount: account.account_id, fallback: fallbackAccount.account_id }, 'falling back to account')
 
-      try {
-        const fallbackPath = `/${fallbackAccount.bucket}/${objectKey}`
-        supabaseRes = await proxyRequest({
-          account:    fallbackAccount,
-          method:     'PUT',
-          path:       fallbackPath,
-          headers:    forwardHeaders,
-          bodyStream: request.raw,
-        })
-        account = fallbackAccount
-      } catch (fallbackErr) {
-        throw fallbackErr
-      }
+      supabaseRes = await proxyRequest({
+        account: fallbackAccount,
+        method: 'PUT',
+        path: `/${fallbackAccount.bucket}/${objectKey}`,
+        headers: forwardHeaders,
+        bodyStream: createBodyStream(requestBody),
+      })
+      account = fallbackAccount
     }
 
-    // Forward response headers verbatim
-    for (const h of FORWARD_RESPONSE_HEADERS) {
-      const val = supabaseRes.headers[h]
-      if (val) reply.header(h, val)
+    for (const header of FORWARD_RESPONSE_HEADERS) {
+      const value = supabaseRes.headers[header]
+      if (value) reply.header(header, value)
     }
 
-    // On success, persist route
     if (supabaseRes.statusCode < 300) {
       const now = Date.now()
-      const routeObj = {
+      upsertRoute({
         encoded_key: encodedKey,
-        account_id:  account.account_id,
+        account_id: account.account_id,
         bucket,
-        object_key:  objectKey,
-        size_bytes:  sizeBytes,
+        object_key: objectKey,
+        size_bytes: sizeBytes,
         uploaded_at: now,
         instance_id: config.INSTANCE_ID,
-      }
-
-      upsertRoute(routeObj)
+      })
       cacheSet(encodedKey, { accountId: account.account_id, bucket, objectKey, sizeBytes })
       recordUpload(account.account_id, sizeBytes)
 
-      // Fire-and-forget RTDB sync
-      Promise.resolve().then(() => rtdbSet(`/routes/${encodedKey}`, {
-        accountId:  account.account_id,
-        bucket,
-        objectKey,
-        sizeBytes,
-        uploadedAt: now,
-        instanceId: config.INSTANCE_ID,
-      })).catch(() => {})
+      Promise.resolve()
+        .then(() => rtdbSet(`/routes/${encodedKey}`, {
+          accountId: account.account_id,
+          bucket,
+          objectKey,
+          sizeBytes,
+          uploadedAt: now,
+          instanceId: config.INSTANCE_ID,
+        }))
+        .catch(() => {})
 
       metrics.uploadBytesTotal.inc({ account_id: account.account_id }, sizeBytes)
     }
 
-    metrics.requestsTotal.inc({ method: 'PUT', operation, status_code: supabaseRes.statusCode })
+    metrics.requestsTotal.inc({ method: 'PUT', operation: 'put_object', status_code: supabaseRes.statusCode })
 
-    // Drain and send Supabase body
     reply.code(supabaseRes.statusCode)
     const body = await supabaseRes.body.text().catch(() => '')
     return reply.send(body || '')
   })
 
-  // ── GET /:bucket/:key* — Download object ────────────────────────────────────
   fastify.get('/:bucket/*', authHook, async (request, reply) => {
     const { bucket } = request.params
     const objectKey = request.params['*']
@@ -277,52 +452,39 @@ export default async function s3Routes(fastify, _opts) {
 
     const route = await lookupRoute(encodedKey)
     if (!route) {
-      return xmlReply(reply, 404, buildErrorXml('NoSuchKey', `The specified key does not exist.`, reqId))
+      return xmlReply(reply, 404, buildErrorXml('NoSuchKey', 'The specified key does not exist.', reqId))
     }
 
-    // Get account credentials
-    const { getAllActiveAccounts: _get } = await import('../db.js')
-    const accounts = _get()
-    const account = accounts.find(a => a.account_id === route.accountId)
+    const account = getAccountById(route.accountId)
     if (!account) {
       return xmlReply(reply, 404, buildErrorXml('NoSuchKey', 'Account not found', reqId))
     }
 
-    const path = `/${account.bucket}/${objectKey}`
-    const forwardHeaders = {}
-    for (const [k, v] of Object.entries(request.headers)) {
-      const lower = k.toLowerCase()
-      if (!['host', 'connection', 'x-api-key', 'authorization'].includes(lower)) {
-        forwardHeaders[lower] = v
-      }
-    }
-
     const supabaseRes = await proxyRequest({
       account,
-      method:  'GET',
-      path,
-      headers: forwardHeaders,
+      method: 'GET',
+      path: `/${account.bucket}/${objectKey}`,
+      headers: buildForwardHeaders(request),
     })
 
-    // Forward headers verbatim
-    for (const h of FORWARD_RESPONSE_HEADERS) {
-      const val = supabaseRes.headers[h]
-      if (val) reply.header(h, val)
+    for (const header of FORWARD_RESPONSE_HEADERS) {
+      const value = supabaseRes.headers[header]
+      if (value) reply.header(header, value)
     }
 
     metrics.requestsTotal.inc({ method: 'GET', operation: 'get_object', status_code: supabaseRes.statusCode })
 
     if (supabaseRes.statusCode === 200) {
       const size = parseInt(supabaseRes.headers['content-length'] ?? '0', 10) || 0
-      if (size > 0) metrics.downloadBytesTotal.inc({ account_id: account.account_id }, size)
+      if (size > 0) {
+        metrics.downloadBytesTotal.inc({ account_id: account.account_id }, size)
+      }
     }
 
     reply.code(supabaseRes.statusCode)
-    // Stream body directly without buffering
-    return reply.send(supabaseRes.body)
+    return reply.send(toReplyBody(supabaseRes.body))
   })
 
-  // ── HEAD /:bucket/:key* — Object metadata ───────────────────────────────────
   fastify.head('/:bucket/*', authHook, async (request, reply) => {
     const { bucket } = request.params
     const objectKey = request.params['*']
@@ -336,57 +498,84 @@ export default async function s3Routes(fastify, _opts) {
       return xmlReply(reply, 404, buildErrorXml('NoSuchKey', 'The specified key does not exist.', reqId))
     }
 
-    const accounts = getAllActiveAccounts()
-    const account = accounts.find(a => a.account_id === route.accountId)
+    const account = getAccountById(route.accountId)
     if (!account) {
       return reply.code(404).send()
     }
 
-    const path = `/${account.bucket}/${objectKey}`
     const supabaseRes = await proxyRequest({
       account,
-      method:  'HEAD',
-      path,
+      method: 'HEAD',
+      path: `/${account.bucket}/${objectKey}`,
       headers: { 'x-forwarded-request-id': request.id },
     })
 
-    for (const h of FORWARD_RESPONSE_HEADERS) {
-      const val = supabaseRes.headers[h]
-      if (val) reply.header(h, val)
+    for (const header of FORWARD_RESPONSE_HEADERS) {
+      const value = supabaseRes.headers[header]
+      if (value) reply.header(header, value)
     }
 
     metrics.requestsTotal.inc({ method: 'HEAD', operation: 'head_object', status_code: supabaseRes.statusCode })
-    // HEAD must not send body
     return reply.code(supabaseRes.statusCode).send()
   })
 
-  // ── DELETE /:bucket/:key* — Delete object ───────────────────────────────────
   fastify.delete('/:bucket/*', authHook, async (request, reply) => {
     const { bucket } = request.params
     const objectKey = request.params['*']
     const encodedKey = encodeKey(bucket, objectKey)
     const reqId = request.id
+    const query = request.query ?? {}
 
     addCorsHeaders(reply)
+
+    if (normalizeQueryValue(query.uploadId)) {
+      const uploadId = normalizeQueryValue(query.uploadId)
+      const multipart = getMultipartUpload(uploadId)
+      if (!multipart) {
+        metrics.requestsTotal.inc({ method: 'DELETE', operation: 'abort_multipart', status_code: 204 })
+        return reply.code(204).send()
+      }
+
+      const account = getAccountById(multipart.account_id)
+      if (!account) {
+        deleteMultipartUpload(uploadId)
+        metrics.requestsTotal.inc({ method: 'DELETE', operation: 'abort_multipart', status_code: 204 })
+        return reply.code(204).send()
+      }
+
+      const supabaseRes = await proxyRequest({
+        account,
+        method: 'DELETE',
+        path: `/${account.bucket}/${multipart.object_key}`,
+        query: { uploadId },
+        headers: { 'x-forwarded-request-id': request.id },
+      })
+
+      metrics.requestsTotal.inc({ method: 'DELETE', operation: 'abort_multipart', status_code: supabaseRes.statusCode })
+
+      if (supabaseRes.statusCode < 300 || supabaseRes.statusCode === 404) {
+        deleteMultipartUpload(uploadId)
+        return reply.code(204).send()
+      }
+
+      const body = await supabaseRes.body.text().catch(() => '')
+      return reply.code(supabaseRes.statusCode).send(body || '')
+    }
 
     const route = await lookupRoute(encodedKey)
     if (!route) {
       return reply.code(204).send()
     }
 
-    const accounts = getAllActiveAccounts()
-    const account = accounts.find(a => a.account_id === route.accountId)
+    const account = getAccountById(route.accountId)
     if (!account) {
-      deleteRoute(encodedKey)
-      cacheDelete(encodedKey)
-      return reply.code(204).send()
+      return xmlReply(reply, 404, buildErrorXml('NoSuchKey', 'Account not found', reqId))
     }
 
-    const path = `/${account.bucket}/${objectKey}`
     const supabaseRes = await proxyRequest({
       account,
-      method:  'DELETE',
-      path,
+      method: 'DELETE',
+      path: `/${account.bucket}/${objectKey}`,
       headers: { 'x-forwarded-request-id': request.id },
     })
 
@@ -395,88 +584,67 @@ export default async function s3Routes(fastify, _opts) {
       cacheDelete(encodedKey)
       recordDelete(account.account_id, route.sizeBytes ?? 0)
 
-      Promise.resolve().then(() => rtdbDelete(`/routes/${encodedKey}`)).catch(() => {})
+      Promise.resolve()
+        .then(() => rtdbDelete(`/routes/${encodedKey}`))
+        .catch(() => {})
     }
 
     metrics.requestsTotal.inc({ method: 'DELETE', operation: 'delete_object', status_code: supabaseRes.statusCode })
     return reply.code(204).send()
   })
 
-  // ── GET /:bucket — List objects ─────────────────────────────────────────────
   fastify.get('/:bucket', authHook, async (request, reply) => {
     const { bucket } = request.params
 
     addCorsHeaders(reply)
 
-    // Pass through to first active account
-    const accounts = getAllActiveAccounts()
-    if (accounts.length === 0) {
-      return xmlReply(reply, 503, buildErrorXml('ServiceUnavailable', 'No active accounts', request.id))
-    }
+    const prefix = normalizeQueryValue(request.query?.prefix)
+    const routes = listRoutesByBucket(bucket, prefix)
+    const xml = buildListResultFromRoutes(bucket, routes, request.query ?? {})
 
-    const account = accounts[0]
-    const path = `/${account.bucket}`
-    const queryStr = new URLSearchParams(request.query).toString()
-
-    const { url, headers: signedHeaders } = await resignRequest({
-      account,
-      method:  'GET',
-      path,
-      query:   Object.fromEntries(new URLSearchParams(request.query)),
-      headers: { 'x-forwarded-request-id': request.id },
-    })
-
-    const { request: undiciReq } = await import('undici')
-    const supabaseRes = await undiciReq(url, { method: 'GET', headers: signedHeaders })
-
-    reply.code(supabaseRes.statusCode).header('Content-Type', 'application/xml')
-    metrics.requestsTotal.inc({ method: 'GET', operation: 'list_objects', status_code: supabaseRes.statusCode })
-    return reply.send(supabaseRes.body)
+    metrics.requestsTotal.inc({ method: 'GET', operation: 'list_objects', status_code: 200 })
+    return reply.code(200).header('Content-Type', 'application/xml').send(xml)
   })
 
-  // ── PUT /:bucket — Create bucket (passthrough) ──────────────────────────────
   fastify.put('/:bucket', authHook, async (request, reply) => {
     addCorsHeaders(reply)
+
     const accounts = getAllActiveAccounts()
     if (accounts.length === 0) {
       return xmlReply(reply, 503, buildErrorXml('ServiceUnavailable', 'No active accounts', request.id))
     }
+
     const account = accounts[0]
-    const path = `/${account.bucket}`
-    const supabaseRes = await proxyRequest({ account, method: 'PUT', path, headers: {} })
+    const supabaseRes = await proxyRequest({ account, method: 'PUT', path: `/${account.bucket}`, headers: {} })
     metrics.requestsTotal.inc({ method: 'PUT', operation: 'create_bucket', status_code: supabaseRes.statusCode })
     return reply.code(supabaseRes.statusCode).send()
   })
 
-  // ── DELETE /:bucket — Delete bucket (passthrough) ──────────────────────────
   fastify.delete('/:bucket', authHook, async (request, reply) => {
     addCorsHeaders(reply)
+
     const accounts = getAllActiveAccounts()
     if (accounts.length === 0) return reply.code(204).send()
 
     const account = accounts[0]
-    const path = `/${account.bucket}`
-    const supabaseRes = await proxyRequest({ account, method: 'DELETE', path, headers: {} })
+    const supabaseRes = await proxyRequest({ account, method: 'DELETE', path: `/${account.bucket}`, headers: {} })
     metrics.requestsTotal.inc({ method: 'DELETE', operation: 'delete_bucket', status_code: supabaseRes.statusCode })
     return reply.code(204).send()
   })
 
-  // ── POST /:bucket/:key* — Multipart upload ──────────────────────────────────
   fastify.post('/:bucket/*', authHook, async (request, reply) => {
     const { bucket } = request.params
     const objectKey = request.params['*']
     const encodedKey = encodeKey(bucket, objectKey)
-    const query = request.query
     const reqId = request.id
+    const query = request.query ?? {}
 
     addCorsHeaders(reply)
 
-    // ── Initiate multipart: POST ?uploads ────────────────────────────────────
-    if (query.uploads !== undefined) {
-      const sizeBytes = parseInt(request.headers['content-length'] ?? '0', 10) || 0
+    if (hasQueryFlag(query, 'uploads')) {
       let account
       try {
-        account = selectAccountForUpload(sizeBytes)
+        account = selectAccountForUpload(0)
       } catch (err) {
         if (err instanceof StorageFullError) {
           sendAlert({ event: 'storage_full', detail: err.message })
@@ -485,136 +653,106 @@ export default async function s3Routes(fastify, _opts) {
         throw err
       }
 
-      const uploadId = nanoid(20)
+      const supabaseRes = await proxyRequest({
+        account,
+        method: 'POST',
+        path: `/${account.bucket}/${objectKey}`,
+        query: { uploads: '' },
+        headers: { 'x-forwarded-request-id': reqId },
+      })
+
+      const responseBody = await supabaseRes.body.text().catch(() => '')
+      metrics.requestsTotal.inc({ method: 'POST', operation: 'create_multipart', status_code: supabaseRes.statusCode })
+
+      if (supabaseRes.statusCode >= 300) {
+        return reply.code(supabaseRes.statusCode).header('Content-Type', 'application/xml').send(responseBody)
+      }
+
+      const uploadId = extractUploadId(responseBody)
+      if (!uploadId) {
+        return xmlReply(reply, 502, buildErrorXml('InternalError', 'Upstream multipart upload ID missing', reqId))
+      }
+
       upsertMultipartUpload({
-        upload_id:  uploadId,
+        upload_id: uploadId,
         account_id: account.account_id,
         bucket,
         object_key: objectKey,
         started_at: Date.now(),
       })
 
-      // Also initiate on Supabase
-      const path = `/${account.bucket}/${objectKey}`
-      const supabaseRes = await proxyRequest({
-        account,
-        method:  'POST',
-        path,
-        query:   { uploads: '' },
-        headers: { 'x-forwarded-request-id': reqId },
-      })
-
-      metrics.requestsTotal.inc({ method: 'POST', operation: 'create_multipart', status_code: 200 })
-
-      // Return our own uploadId so we track the account mapping
-      reply.code(200).header('Content-Type', 'application/xml')
-      return reply.send(buildInitiateMultipartUploadResult(bucket, objectKey, uploadId))
+      return reply.code(200).header('Content-Type', 'application/xml').send(
+        responseBody || buildInitiateMultipartUploadResult(bucket, objectKey, uploadId)
+      )
     }
 
-    // ── Upload part: PUT ?uploadId=X&partNumber=N ────────────────────────────
-    if (query.uploadId && query.partNumber) {
-      const mp = getMultipartUpload(query.uploadId)
-      if (!mp) {
+    if (normalizeQueryValue(query.uploadId) && !normalizeQueryValue(query.partNumber)) {
+      const uploadId = normalizeQueryValue(query.uploadId)
+      const multipart = getMultipartUpload(uploadId)
+      if (!multipart) {
         return xmlReply(reply, 404, buildErrorXml('NoSuchUpload', 'The specified upload does not exist.', reqId))
       }
 
-      const accounts = getAllActiveAccounts()
-      const account = accounts.find(a => a.account_id === mp.account_id)
+      const account = getAccountById(multipart.account_id)
       if (!account) {
         return xmlReply(reply, 500, buildErrorXml('InternalError', 'Account not found', reqId))
       }
 
-      const path = `/${account.bucket}/${objectKey}`
+      const bodyBuffer = await getRequestBodyBuffer(request)
       const supabaseRes = await proxyRequest({
         account,
-        method:     'PUT',
-        path,
-        query:      { uploadId: query.uploadId, partNumber: query.partNumber },
-        headers:    { ...request.headers, 'x-forwarded-request-id': reqId },
-        bodyStream: request.raw,
+        method: 'POST',
+        path: `/${account.bucket}/${multipart.object_key}`,
+        query: { uploadId },
+        headers: {
+          'content-type': request.headers['content-type'] || 'application/xml',
+          'x-forwarded-request-id': reqId,
+        },
+        bodyStream: createBodyStream(bodyBuffer),
       })
 
-      for (const h of ['etag', 'x-amz-request-id']) {
-        const v = supabaseRes.headers[h]
-        if (v) reply.header(h, v)
+      const responseBody = await supabaseRes.body.text().catch(() => '')
+      metrics.requestsTotal.inc({ method: 'POST', operation: 'complete_multipart', status_code: supabaseRes.statusCode })
+
+      if (supabaseRes.statusCode >= 300) {
+        return reply.code(supabaseRes.statusCode).header('Content-Type', 'application/xml').send(responseBody)
       }
 
-      metrics.requestsTotal.inc({ method: 'POST', operation: 'upload_part', status_code: supabaseRes.statusCode })
-      return reply.code(supabaseRes.statusCode).send()
-    }
+      deleteMultipartUpload(uploadId)
 
-    // ── Complete multipart: POST ?uploadId=X (with XML body) ─────────────────
-    if (query.uploadId && !query.partNumber) {
-      const mp = getMultipartUpload(query.uploadId)
-      if (!mp) {
-        return xmlReply(reply, 404, buildErrorXml('NoSuchUpload', 'The specified upload does not exist.', reqId))
-      }
-
-      const accounts = getAllActiveAccounts()
-      const account = accounts.find(a => a.account_id === mp.account_id)
-      if (!account) {
-        return xmlReply(reply, 500, buildErrorXml('InternalError', 'Account not found', reqId))
-      }
-
-      const path = `/${account.bucket}/${objectKey}`
-      const bodyBuf = await request.body  // Fastify parsed as string/buffer
-
-      const supabaseRes = await proxyRequest({
-        account,
-        method:     'POST',
-        path,
-        query:      { uploadId: query.uploadId },
-        headers:    { 'content-type': 'application/xml', 'x-forwarded-request-id': reqId },
-        bodyStream: bodyBuf ? Readable.from(Buffer.from(bodyBuf)) : null,
-      })
-
-      const etag = supabaseRes.headers['etag']?.replace(/"/g, '') ?? nanoid(16)
-      const location = `${config.PROXY_ENDPOINT ?? ''}/${bucket}/${objectKey}`
-
-      deleteMultipartUpload(query.uploadId)
-
-      // Insert final route
       const now = Date.now()
       upsertRoute({
         encoded_key: encodedKey,
-        account_id:  account.account_id,
+        account_id: account.account_id,
         bucket,
-        object_key:  objectKey,
-        size_bytes:  0, // size unknown at complete time
+        object_key: objectKey,
+        size_bytes: 0,
         uploaded_at: now,
         instance_id: config.INSTANCE_ID,
       })
       cacheSet(encodedKey, { accountId: account.account_id, bucket, objectKey, sizeBytes: 0 })
 
-      Promise.resolve().then(() => rtdbSet(`/routes/${encodedKey}`, {
-        accountId: account.account_id, bucket, objectKey, sizeBytes: 0, uploadedAt: now, instanceId: config.INSTANCE_ID,
-      })).catch(() => {})
+      Promise.resolve()
+        .then(() => rtdbSet(`/routes/${encodedKey}`, {
+          accountId: account.account_id,
+          bucket,
+          objectKey,
+          sizeBytes: 0,
+          uploadedAt: now,
+          instanceId: config.INSTANCE_ID,
+        }))
+        .catch(() => {})
 
-      metrics.requestsTotal.inc({ method: 'POST', operation: 'complete_multipart', status_code: 200 })
+      const etag = supabaseRes.headers.etag?.replace(/"/g, '') ?? nanoid(16)
+      const location = buildProxyLocation(request, bucket, objectKey)
 
       reply.code(200).header('Content-Type', 'application/xml')
       return reply.send(buildCompleteMultipartUploadResult(bucket, objectKey, location, etag))
     }
 
-    // ── Abort multipart: DELETE ?uploadId=X ──────────────────────────────────
     return xmlReply(reply, 400, buildErrorXml('InvalidRequest', 'Unknown multipart operation', reqId))
   })
-
-  // ── DELETE /:bucket/:key?uploadId=X — Abort multipart ──────────────────────
-  // (handled via DELETE with uploadId query param)
-  fastify.addHook('preHandler', async (request, reply) => {
-    if (request.method === 'DELETE' && request.query.uploadId) {
-      const { bucket } = request.params ?? {}
-      const objectKey = request.params?.['*']
-      if (bucket && objectKey) {
-        const mp = getMultipartUpload(request.query.uploadId)
-        if (mp) {
-          deleteMultipartUpload(request.query.uploadId)
-        }
-        addCorsHeaders(reply)
-        metrics.requestsTotal.inc({ method: 'DELETE', operation: 'abort_multipart', status_code: 204 })
-        reply.code(204).send()
-      }
-    }
-  })
 }
+
+
+

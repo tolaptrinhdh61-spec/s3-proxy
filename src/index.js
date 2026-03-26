@@ -18,13 +18,12 @@
  */
 
 import Fastify from 'fastify'
-import closeGrace from '@fastify/close-grace'
 import pino from 'pino'
 import { randomBytes } from 'crypto'
 
 import config from './config.js'
-import { db, upsertRoute, getAllRoutes } from './db.js'
-import { cacheSet, cacheClear } from './cache.js'
+import { db, upsertRoute, deleteRoute, getAllRoutes } from './db.js'
+import { cacheSet, cacheDelete, cacheClear } from './cache.js'
 import {
   reloadAccountsFromRTDB,
   getAccountsStats,
@@ -110,9 +109,8 @@ function startRoutesListener() {
               if (!encodedKey) return
 
               if (data.data === null) {
-                // Deleted
-                const { deleteRoute } = await import('./db.js').catch(() => ({}))
-                const { cacheDelete } = await import('./cache.js').catch(() => ({}))
+                deleteRoute(encodedKey)
+                cacheDelete(encodedKey)
               } else {
                 const route = data.data
                 upsertRoute({
@@ -360,8 +358,6 @@ async function bootstrap() {
 
   // ── [9] Register plugins & routes, then start Fastify ────────────────────────
 
-  // CORS / close-grace
-  await fastify.register(closeGrace, { delay: config.DRAIN_TIMEOUT_MS })
 
   // Plugins
   await fastify.register(authPlugin)
@@ -415,3 +411,6 @@ bootstrap().catch(err => {
   log.fatal({ err }, 'Bootstrap failed')
   process.exit(1)
 })
+
+
+

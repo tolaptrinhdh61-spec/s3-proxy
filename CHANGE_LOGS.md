@@ -1,3 +1,24 @@
+## [2026-03-26 08:34] — Fix Bootstrap, Runtime, Test Coverage
+
+**Loại:** fix  
+**Tóm tắt yêu cầu:** Sau khi user khôi phục `src/config.js`, kiểm tra lại và xử lý các lỗi còn lại để project boot/test được  
+**Nội dung thay đổi:**
+
+- File `src/index.js`: bỏ import/plugin `@fastify/close-grace` không tồn tại, sửa RTDB routes listener để xóa route/cache đúng, smoke boot lại entrypoint thành công
+- File `src/db.js`: thêm helper `getAllAccounts`, `getAccountById`, `listRoutesByBucket`, `deactivateMissingAccounts` để route lookup/list chuẩn hơn
+- File `src/accountPool.js`: thêm `reloadAccountsFromSQLite`, đồng bộ inactive account từ nguồn dữ liệu và giữ in-memory state nhất quán
+- File `src/quotaPoller.js`: cập nhật lại `used_bytes` trong memory sau quota poll để tránh lệch thứ tự chọn account
+- File `src/routes/s3.js`: fix upload retry bằng buffered body, fix GET stream response, thêm binary content-type parser, sửa multipart theo đúng `PUT part` / `POST complete` / `DELETE abort`, và LIST đọc từ route table local
+- File `test/utils.test.js`, `test/storage.test.js`: set env giả lập trong test để không fail sớm vì config validation
+- File `test/server.test.js`: thêm integration test cho PUT/GET/HEAD/DELETE/LIST/multipart/auth/health/metrics/CORS
+- File `package.json`, `package-lock.json`: thêm script `test`, khóa dependency tree bằng `npm install`, bỏ dependency `@fastify/close-grace` không hợp lệ
+
+**Ghi chú kỹ thuật:**
+- `npm test` pass toàn bộ suite local
+- `node src/index.js` smoke boot pass với env giả lập và SQLite local
+- `test/firebase.test.js` chưa chạy vì cần Firebase RTDB thật
+
+---
 ## [2025-03-25 12:00] — T4+T5+T6: Utilities, Routes, Bootstrap
 
 **Loại:** feat  
@@ -51,3 +72,4 @@
 - File `test/firebase.test.js`: 6 test cases theo checklist T2
 
 ---
+
