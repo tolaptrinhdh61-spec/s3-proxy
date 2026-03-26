@@ -402,6 +402,18 @@ curl -X POST http://localhost:3000/admin/accounts/import \
   --data @accounts-import.json
 ```
 
+### Postman Collection
+
+The repo now includes [`postman.json`](./postman.json), a Postman collection for production-style verification of the main proxy flows.
+
+Recommended usage:
+
+- fill `baseUrl`, `apiKey`, and the two backend account variable groups
+- run the collection from top to bottom so the first request can regenerate run-specific bucket/object names
+- review the built-in assertions for account import, multi-account placement through `usedBytes`, core S3 CRUD/LIST behavior, multipart complete, multipart abort, and final cleanup
+
+The collection cleans up the test objects and logical bucket it creates, but it does not remove the imported backend accounts.
+
 ---
 
 ## Environment Variables

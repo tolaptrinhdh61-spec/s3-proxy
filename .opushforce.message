@@ -1,5 +1,1 @@
-[2026-03-26 13:21] (feat): them accounts admin api
-
-- Them GET /admin/accounts, POST /admin/accounts, POST /admin/accounts/import de them 1 hoac nhieu account
-- Ho tro import tu account object, array, map theo accountId, va JSON export co key accounts
-- Them test/accounts-api.test.js, cap nhat README.md va deploy.vi.md, sua rtdbBatchPatch root path cho import nhieu account
+feat: them postman.json kiem thu end-to-end cho import accounts, multi-account placement, S3 CRUD/LIST, multipart complete/abort va cleanup production

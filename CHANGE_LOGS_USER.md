@@ -1,3 +1,11 @@
+## [2026-03-26 13:48] — Tạo Postman collection để test production
+
+**Yêu cầu gốc của user:** tạo `postman.json` để kiểm thử toàn bộ luồng nghiệp vụ và dùng làm tài liệu test trên môi trường production  
+**Kết quả thực hiện:** thêm file `postman.json` có sẵn biến cấu hình, luồng import 2 accounts, kiểm tra phân bổ object qua nhiều account bằng `usedBytes`, test đầy đủ `PUT`/`GET`/`HEAD`/`LIST`/`DELETE`, create/delete bucket, multipart complete, abort multipart và cleanup; cập nhật thêm hướng dẫn ngắn trong `README.md` và `deploy.vi.md`; validate JSON thành công.  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 13:21] — Them API de luu va import nhieu accounts
 
 **Yêu cầu gốc của user:** them API de luu them accounts, va co the import nhieu account cung luc  

@@ -123,6 +123,27 @@ API import hỗ trợ các dạng body:
 - Sau khi import, proxy sẽ lưu SQLite cục bộ và đồng bộ lên RTDB
 - `GET /admin/accounts` trả danh sách account hiện có nhưng không trả secret key
 
+### 3.5. Bộ kiểm thử Postman cho production
+
+Repo hiện có sẵn file [`postman.json`](/H:/nodejs-tester/s3-proxy/postman.json) để import vào Postman và chạy kiểm thử end-to-end.
+
+Cách dùng nhanh:
+
+- Điền các biến `baseUrl`, `apiKey`, và 2 nhóm biến account backend
+- Chạy collection từ trên xuống dưới để request đầu tiên tự tạo `runId`, bucket logic và object key riêng cho lượt test
+- Theo dõi các assertion có sẵn cho:
+  - import account và kiểm tra `rtdbSynced`
+  - phân bổ object qua 2 account bằng `GET /admin/accounts`
+  - các luồng S3 phổ biến: `PUT`, `GET`, `HEAD`, `LIST`, `DELETE`, create/delete bucket
+  - multipart complete và abort multipart
+  - cleanup cuối cùng để `usedBytes` quay về mức ban đầu
+
+Lưu ý:
+
+- Collection có dọn object test và logical bucket sau khi chạy xong
+- Collection không xóa các backend account đã import, nên nên dùng account test riêng khi kiểm thử production
+- Logic chọn account của proxy là `least-used + QUOTA_THRESHOLD`, không phải round-robin cứng
+
 ## 4. Cấu hình biến môi trường
 
 Từ thư mục gốc của repo:

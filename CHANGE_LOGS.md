@@ -1,3 +1,18 @@
+## [2026-03-26 13:48] — Them Postman collection kiem thu end-to-end cho production
+
+**Loại:** feat  
+**Tóm tắt yêu cầu:** tạo `postman.json` để kiểm thử toàn bộ luồng nghiệp vụ hiện tại, dùng được như tài liệu cho kiểm thử trên môi trường production  
+**Nội dung thay đổi:**
+
+- File `postman.json`: them Postman collection hoan chinh cho smoke check `health`/`metrics`, import 2 backend accounts, verify multi-account placement bang `usedBytes`, test `PUT`/`GET`/`HEAD`/`LIST`/`DELETE`, bucket lifecycle, multipart complete, abort multipart, va cleanup cuoi luong.
+- File `postman.json`: bo sung collection variables cho `baseUrl`, `apiKey`, 2 account backend, payload test, multipart state, va script reset `runId` de moi lan chay sinh bucket/object key rieng.
+- File `README.md`, `deploy.vi.md`: bo sung huong dan ngan ve cach import va chay `postman.json` tren staging/production, dong thoi neu ro collection chi xoa object test + logical bucket, khong xoa backend accounts.
+- File `.opushforce.message`: cap nhat thong diep tom tat cho artifact kiem thu moi.
+
+**Ghi chú kỹ thuật:** collection nay duoc thiet ke theo behavior thuc te cua proxy la `least-used + QUOTA_THRESHOLD`, nen assert phan bo object dua tren `GET /admin/accounts` va `usedBytes` thay vi round-robin cung. Da validate local bang parse JSON `postman.json`.
+
+---
+
 ## [2026-03-26 13:21] — Them admin API de them va import nhieu accounts
 
 **Loại:** feat  
