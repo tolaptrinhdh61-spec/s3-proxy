@@ -19,7 +19,6 @@ const STRIP_HEADERS = new Set([
   'authorization',
   'x-amz-security-token',
   'x-amz-date',
-  'x-amz-content-sha256',
   'x-amz-credential',
   'x-amz-algorithm',
   'x-amz-signature',
@@ -29,6 +28,17 @@ const STRIP_HEADERS = new Set([
   'transfer-encoding',
   'expect',
 ])
+
+function joinEndpointPath(basePath = '/', requestPath = '/') {
+  const normalizedBase = basePath && basePath !== '/'
+    ? basePath.replace(/\/+$/, '')
+    : ''
+  const normalizedRequest = requestPath.startsWith('/')
+    ? requestPath
+    : `/${requestPath}`
+
+  return `${normalizedBase}${normalizedRequest}`
+}
 
 /**
  * Re-sign an S3 request for a specific account.
@@ -45,6 +55,7 @@ const STRIP_HEADERS = new Set([
 export async function resignRequest({ account, method, path, query = {}, headers = {}, body = null }) {
   // Parse endpoint to get hostname
   const endpointUrl = new URL(account.endpoint)
+  const signedPath = joinEndpointPath(endpointUrl.pathname, path)
 
   // Build clean headers (strip AWS auth headers, keep relevant ones)
   const cleanHeaders = {}
@@ -68,7 +79,7 @@ export async function resignRequest({ account, method, path, query = {}, headers
     protocol: endpointUrl.protocol,
     hostname: endpointUrl.hostname,
     port: endpointUrl.port ? parseInt(endpointUrl.port, 10) : undefined,
-    path,
+    path: signedPath,
     query: queryParams,
     headers: cleanHeaders,
     body,
@@ -92,7 +103,7 @@ export async function resignRequest({ account, method, path, query = {}, headers
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&')
 
-  const url = `${endpointUrl.protocol}//${endpointUrl.host}${path}${queryStr ? '?' + queryStr : ''}`
+  const url = `${endpointUrl.protocol}//${endpointUrl.host}${signedPath}${queryStr ? '?' + queryStr : ''}`
 
   return { url, headers: signed.headers }
 }

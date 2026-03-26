@@ -1,3 +1,20 @@
+## [2026-03-26 11:47] — Fix SigV4 path + payload signing cho Supabase
+
+**Loại:** fix  
+**Tóm tắt yêu cầu:** kiểm tra lỗi `404` rồi tiếp tục xử lý `SignatureDoesNotMatch` khi `PUT /s3-proxy-dem9/hello.txt` qua proxy  
+**Nội dung thay đổi:**
+
+- File `src/utils/sigv4.js`: giữ nguyên base path của `account.endpoint` như `/storage/v1/s3` khi dựng `HttpRequest` và URL upstream.
+- File `src/utils/sigv4.js`: không còn strip header `x-amz-content-sha256`, giúp `UNSIGNED-PAYLOAD` được đưa vào canonical request và `SignedHeaders`.
+- File `test/utils.test.js`: bổ sung assert để kiểm tra URL đã giữ `/storage/v1/s3`, preserve `x-amz-content-sha256`, và `Authorization` có ký header này.
+- File `.opushforce.message`: cập nhật bản ghi ngắn gọn cho fix SigV4 hiện tại.
+- File `CHANGE_LOGS.md`: thêm entry kỹ thuật cho lỗi ký request Supabase.
+- File `CHANGE_LOGS_USER.md`: thêm entry theo góc nhìn yêu cầu của user.
+
+**Ghi chú kỹ thuật:** fix này xử lý cả hai nguyên nhân trong cùng luồng ký request: URL upstream bị mất endpoint base path và canonical signing bị lệch vì bỏ `x-amz-content-sha256`. Đã verify local bằng `npm test` và request thật `PUT`/`GET` trả `200`.
+
+---
+
 ## [2026-03-26 09:38] — Metadata-backed logical bucket and reconciliation
 
 **Loại:** feat  

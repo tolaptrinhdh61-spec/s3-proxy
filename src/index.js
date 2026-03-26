@@ -313,7 +313,7 @@ async function bootstrap() {
   }
 
   await heartbeat().catch(() => {})
-  const heartbeatTimer = setInterval(() => heartbeat().catch(() => {}), 30_000)
+  const heartbeatTimer = setInterval(() => heartbeat().catch(() => {}), 30000)
   heartbeatTimer.unref()
 
   startQuotaPoller(log)

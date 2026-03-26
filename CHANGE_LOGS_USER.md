@@ -1,3 +1,11 @@
+## [2026-03-26 11:47] — Sửa lỗi upload Supabase trả 404 và SignatureDoesNotMatch
+
+**Yêu cầu gốc của user:** xem lỗi khi `PUT /s3-proxy-dem9/hello.txt` trả `404`, sau đó kiểm tra tiếp lỗi `SignatureDoesNotMatch`, và cập nhật 3 file ghi nhận theo checklist opushforce  
+**Kết quả thực hiện:** sửa `src/utils/sigv4.js` để giữ `/storage/v1/s3` trong URL upstream và không loại `x-amz-content-sha256` khỏi chữ ký SigV4, cập nhật `test/utils.test.js`, chạy `npm test`, verify lại `PUT`/`GET` thật thành công, đồng thời ghi nhận thay đổi vào `.opushforce.message`, `CHANGE_LOGS.md`, `CHANGE_LOGS_USER.md`.  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 09:38] — Tích hợp metadata control plane + cập nhật tài liệu
 
 **Yêu cầu gốc của user:** tối ưu prompt cho Codex, triển khai hướng metadata control plane, đồng thời cập nhật tài liệu theo cấu trúc project  

@@ -13,12 +13,13 @@
     "test:firebase": "node test/firebase.test.js"
   },
   "dependencies": {
+    "@aws-crypto/sha256-js": "^5",
     "@aws-sdk/client-s3": "^3",
     "@aws-sdk/signature-v4": "^3",
-    "@aws-crypto/sha256-js": "^5",
-    "@smithy/protocol-http": "^3",
     "@fastify/rate-limit": "^9",
+    "@smithy/protocol-http": "^3",
     "better-sqlite3": "^9",
+    "dotenv": "^17.3.1",
     "eventsource": "^2",
     "fastify": "^4",
     "fastify-plugin": "^4",

@@ -60,6 +60,7 @@ async function testResignRequest() {
       headers: {
         'content-type':   'text/plain',
         'content-length': '11',
+        'x-amz-content-sha256': 'UNSIGNED-PAYLOAD',
       },
     })
 
@@ -67,11 +68,23 @@ async function testResignRequest() {
       throw new Error(`Authorization header missing or wrong format: ${headers['authorization']}`)
     }
 
+    if (headers['x-amz-content-sha256'] !== 'UNSIGNED-PAYLOAD') {
+      throw new Error(`x-amz-content-sha256 not preserved: ${headers['x-amz-content-sha256']}`)
+    }
+
+    if (!headers['authorization'].includes('x-amz-content-sha256')) {
+      throw new Error(`SignedHeaders missing x-amz-content-sha256: ${headers['authorization']}`)
+    }
+
     if (!url.startsWith('https://testproject.supabase.co')) {
       throw new Error(`URL wrong: ${url}`)
     }
 
-    ok(`resignRequest tạo header Authorization dạng AWS4-HMAC-SHA256`)
+    if (url !== 'https://testproject.supabase.co/storage/v1/s3/test-bucket/foo/bar.txt') {
+      throw new Error(`URL missing endpoint base path: ${url}`)
+    }
+
+    ok(`resignRequest tạo header Authorization va giu /storage/v1/s3 trong URL`)
   } catch (err) {
     fail('resignRequest Authorization header', err)
   }
