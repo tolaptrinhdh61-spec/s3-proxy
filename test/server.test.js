@@ -247,6 +247,48 @@ async function main() {
     }
 
     try {
+      const locationRes = await fastify.inject({
+        method: 'GET',
+        url: '/mybucket?location',
+        headers: { 'x-api-key': 'test' },
+      })
+      assert(locationRes.statusCode === 200, `GetBucketLocation status=${locationRes.statusCode}`)
+      assert(locationRes.payload.includes('<LocationConstraint'), 'GetBucketLocation missing XML root')
+      ok('GET /mybucket?location -> 200 canned XML')
+    } catch (err) {
+      fail('GET /mybucket?location', err)
+    }
+
+    try {
+      const versioningRes = await fastify.inject({
+        method: 'GET',
+        url: '/mybucket?versioning',
+        headers: { 'x-api-key': 'test' },
+      })
+      assert(versioningRes.statusCode === 200, `GetBucketVersioning status=${versioningRes.statusCode}`)
+      assert(versioningRes.payload.includes('<VersioningConfiguration'), 'GetBucketVersioning missing XML root')
+      ok('GET /mybucket?versioning -> 200 canned XML')
+    } catch (err) {
+      fail('GET /mybucket?versioning', err)
+    }
+
+    try {
+      const copyRes = await fastify.inject({
+        method: 'PUT',
+        url: '/mybucket/path/to/copied.txt',
+        headers: {
+          ...authHeaders,
+          'x-amz-copy-source': '/mybucket/source.txt',
+        },
+      })
+      assert(copyRes.statusCode === 501, `CopyObject status=${copyRes.statusCode}`)
+      assert(copyRes.payload.includes('<Code>NotImplemented</Code>'), 'CopyObject should return NotImplemented')
+      ok('PUT co x-amz-copy-source -> 501 NotImplemented')
+    } catch (err) {
+      fail('PUT x-amz-copy-source', err)
+    }
+
+    try {
       const putRes = await fastify.inject({
         method: 'PUT',
         url: '/mybucket/path/to/file.txt',
@@ -289,6 +331,14 @@ async function main() {
     }
 
     try {
+      const specialPut = await fastify.inject({
+        method: 'PUT',
+        url: '/mybucket/path/a&b.txt',
+        headers: authHeaders,
+        payload: 'special',
+      })
+      assert(specialPut.statusCode === 200, `PUT special key status=${specialPut.statusCode}`)
+
       for (const [url, payload] of [
         ['/mybucket/photos/a.txt', 'A'],
         ['/mybucket/photos/2026/b.txt', 'B'],
@@ -311,6 +361,16 @@ async function main() {
       assert(listRes.payload.includes('<ListBucketResult'), 'list xml missing root')
       assert(listRes.payload.includes('<Key>path/to/file.txt</Key>'), 'list missing object key')
       ok('GET /mybucket -> XML ListBucketResult tu route table')
+
+      const encodedListRes = await fastify.inject({
+        method: 'GET',
+        url: '/mybucket?list-type=2&prefix=path/&encoding-type=url',
+        headers: { 'x-api-key': 'test' },
+      })
+      assert(encodedListRes.statusCode === 200, `LIST encoding=url status=${encodedListRes.statusCode}`)
+      assert(encodedListRes.payload.includes('<EncodingType>url</EncodingType>'), 'list missing EncodingType=url')
+      assert(encodedListRes.payload.includes('<Key>path%2Fa%26b.txt</Key>'), 'encoded list missing URL-encoded key')
+      ok('GET /mybucket?encoding-type=url -> key duoc URL-encode')
     } catch (err) {
       fail('GET /mybucket', err)
     }

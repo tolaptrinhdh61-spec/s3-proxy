@@ -106,6 +106,7 @@ export async function resignRequest({ account, method, path, query = {}, headers
   const cleanHeaders = {}
   for (const [k, v] of Object.entries(headers)) {
     const lower = k.toLowerCase()
+    if (lower.startsWith('x-amz-checksum-')) continue
     if (!STRIP_HEADERS.has(lower)) {
       cleanHeaders[lower] = v
     }

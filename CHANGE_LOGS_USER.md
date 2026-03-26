@@ -1,3 +1,11 @@
+## [2026-03-26 18:20] — Hoàn tất checklist release artifacts
+
+**Yêu cầu gốc của user:** cập nhật đầy đủ `.opushforce.message`, `CHANGE_LOGS.md`, `CHANGE_LOGS_USER.md` theo checklist.  
+**Kết quả thực hiện:** đã cập nhật `.opushforce.message` và thêm entry mới lên đầu cả 2 file changelog để đồng bộ trạng thái follow-up sau review PR.  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 17:05] — Sửa gói lỗi critical sau audit tổng thể
 
 **Yêu cầu gốc của user:** xem xét audit bug/compatibility và điều chỉnh lại các điểm cần fix ngay.  

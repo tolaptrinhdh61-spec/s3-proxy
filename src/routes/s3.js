@@ -45,6 +45,8 @@ import { sendAlert } from '../utils/webhook.js'
 import {
   buildCompleteMultipartUploadResult,
   buildErrorXml,
+  buildGetBucketLocationResult,
+  buildGetBucketVersioningResult,
   buildInitiateMultipartUploadResult,
   buildListBucketResult,
 } from '../utils/s3Xml.js'
@@ -257,10 +259,18 @@ function shouldSkipByCursor(objectKey, cursor) {
 function buildListResultFromMetadata(bucket, query = {}) {
   const prefix = normalizeQueryValue(query.prefix)
   const delimiter = normalizeQueryValue(query.delimiter)
+  const encodingType = normalizeQueryValue(query['encoding-type'])
   const maxKeys = parseMaxKeys(normalizeQueryValue(query['max-keys']))
   const continuationToken = normalizeQueryValue(query['continuation-token'])
   const startAfter = normalizeQueryValue(query['start-after'])
   const decodedToken = continuationToken ? decodeListContinuationToken(continuationToken) : null
+
+  if (encodingType && encodingType !== 'url') {
+    const err = new Error('Invalid encoding-type value')
+    err.statusCode = 400
+    err.s3Code = 'InvalidArgument'
+    throw err
+  }
 
   if (continuationToken && !decodedToken) {
     const err = new Error('Invalid continuation token')
@@ -342,6 +352,7 @@ function buildListResultFromMetadata(bucket, query = {}) {
   return buildListBucketResult(bucket, objects, {
     prefix,
     delimiter,
+    encodingType,
     maxKeys,
     startAfter: decodedToken ? '' : startAfter,
     continuationToken,
@@ -384,8 +395,8 @@ async function readBackendObjectMetadataWithRetry(account, backendKey, requestId
     }
     return metadata
   }, {
-    maxAttempts: 3,
-    baseDelayMs: 75,
+    maxAttempts: 5,
+    baseDelayMs: 200,
   }).catch((err) => {
     if (err?.code === 'BACKEND_METADATA_NOT_READY') return null
     throw err
@@ -394,7 +405,7 @@ async function readBackendObjectMetadataWithRetry(account, backendKey, requestId
 
 async function chooseUploadTarget(bucket, objectKey, encodedKey, sizeBytes) {
   const existingMetadata = getRoute(encodedKey)
-  if (existingMetadata && existingMetadata.state !== ROUTE_STATE.DELETED) {
+  if (existingMetadata && ![ROUTE_STATE.DELETED, ROUTE_STATE.DELETING].includes(existingMetadata.state)) {
     const account = getAccountById(existingMetadata.account_id)
     if (account) {
       return {
@@ -462,6 +473,11 @@ export default async function s3Routes(fastify, _opts) {
     const query = request.query ?? {}
 
     addCorsHeaders(reply)
+
+    if (request.headers['x-amz-copy-source']) {
+      metrics.requestsTotal.inc({ method: 'PUT', operation: 'copy_object', status_code: 501 })
+      return xmlReply(reply, 501, buildErrorXml('NotImplemented', 'CopyObject is not implemented by this proxy.', reqId))
+    }
 
     if (normalizeQueryValue(query.uploadId) && normalizeQueryValue(query.partNumber)) {
       const uploadId = normalizeQueryValue(query.uploadId)
@@ -772,11 +788,22 @@ export default async function s3Routes(fastify, _opts) {
 
   fastify.get('/:bucket', authHook, async (request, reply) => {
     const { bucket } = request.params
+    const query = request.query ?? {}
 
     addCorsHeaders(reply)
 
+    if (hasQueryFlag(query, 'location')) {
+      metrics.requestsTotal.inc({ method: 'GET', operation: 'get_bucket_location', status_code: 200 })
+      return reply.code(200).header('Content-Type', XML_CONTENT_TYPE).send(buildGetBucketLocationResult(''))
+    }
+
+    if (hasQueryFlag(query, 'versioning')) {
+      metrics.requestsTotal.inc({ method: 'GET', operation: 'get_bucket_versioning', status_code: 200 })
+      return reply.code(200).header('Content-Type', XML_CONTENT_TYPE).send(buildGetBucketVersioningResult(''))
+    }
+
     try {
-      const xml = buildListResultFromMetadata(bucket, request.query ?? {})
+      const xml = buildListResultFromMetadata(bucket, query)
       metrics.metadataBackedListRequestsTotal.inc({ status_code: 200 })
       metrics.requestsTotal.inc({ method: 'GET', operation: 'list_objects', status_code: 200 })
       return reply.code(200).header('Content-Type', XML_CONTENT_TYPE).send(xml)

@@ -14,6 +14,11 @@ function esc(str) {
     .replace(/'/g, '&apos;')
 }
 
+function encodeIfNeeded(value, encodingType = '') {
+  if (encodingType !== 'url') return value
+  return encodeURIComponent(String(value ?? ''))
+}
+
 export function buildErrorXml(code, message, requestId = '') {
   return [
     XML_DECLARATION,
@@ -37,6 +42,7 @@ export function buildListBucketResult(bucket, objects = [], options = {}) {
     isTruncated = false,
     commonPrefixes = [],
     keyCount = objects.length + commonPrefixes.length,
+    encodingType = '',
   } = options
 
   const contents = objects.map((obj) => {
@@ -47,7 +53,7 @@ export function buildListBucketResult(bucket, objects = [], options = {}) {
 
     return [
       '  <Contents>',
-      `    <Key>${esc(obj.key)}</Key>`,
+      `    <Key>${esc(encodeIfNeeded(obj.key, encodingType))}</Key>`,
       `    <LastModified>${lastMod}</LastModified>`,
       etag ? `    <ETag>${etag}</ETag>` : '    <ETag></ETag>',
       `    <Size>${obj.size ?? 0}</Size>`,
@@ -59,7 +65,7 @@ export function buildListBucketResult(bucket, objects = [], options = {}) {
   const prefixNodes = commonPrefixes.map((entry) => (
     [
       '  <CommonPrefixes>',
-      `    <Prefix>${esc(entry)}</Prefix>`,
+      `    <Prefix>${esc(encodeIfNeeded(entry, encodingType))}</Prefix>`,
       '  </CommonPrefixes>',
     ].join('\n')
   )).join('\n')
@@ -68,14 +74,15 @@ export function buildListBucketResult(bucket, objects = [], options = {}) {
     XML_DECLARATION,
     '<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">',
     `  <Name>${esc(bucket)}</Name>`,
-    `  <Prefix>${esc(prefix)}</Prefix>`,
+    `  <Prefix>${esc(encodeIfNeeded(prefix, encodingType))}</Prefix>`,
     `  <MaxKeys>${maxKeys}</MaxKeys>`,
     `  <KeyCount>${keyCount}</KeyCount>`,
     `  <IsTruncated>${isTruncated}</IsTruncated>`,
   ]
 
-  if (delimiter) lines.push(`  <Delimiter>${esc(delimiter)}</Delimiter>`)
-  if (startAfter) lines.push(`  <StartAfter>${esc(startAfter)}</StartAfter>`)
+  if (delimiter) lines.push(`  <Delimiter>${esc(encodeIfNeeded(delimiter, encodingType))}</Delimiter>`)
+  if (startAfter) lines.push(`  <StartAfter>${esc(encodeIfNeeded(startAfter, encodingType))}</StartAfter>`)
+  if (encodingType) lines.push(`  <EncodingType>${esc(encodingType)}</EncodingType>`)
   if (continuationToken) lines.push(`  <ContinuationToken>${esc(continuationToken)}</ContinuationToken>`)
   if (nextContinuationToken) lines.push(`  <NextContinuationToken>${esc(nextContinuationToken)}</NextContinuationToken>`)
   if (contents) lines.push(contents)
@@ -106,6 +113,25 @@ export function buildCompleteMultipartUploadResult(bucket, key, location, etag) 
     `  <ETag>&quot;${esc(etag?.replace(/"/g, '') ?? '')}&quot;</ETag>`,
     '</CompleteMultipartUploadResult>',
   ].join('\n')
+}
+
+export function buildGetBucketLocationResult(locationConstraint = '') {
+  return [
+    XML_DECLARATION,
+    '<LocationConstraint xmlns="http://s3.amazonaws.com/doc/2006-03-01/">',
+    `  ${esc(locationConstraint)}`,
+    '</LocationConstraint>',
+  ].join('\n')
+}
+
+export function buildGetBucketVersioningResult(status = '') {
+  const lines = [
+    XML_DECLARATION,
+    '<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">',
+  ]
+  if (status) lines.push(`  <Status>${esc(status)}</Status>`)
+  lines.push('</VersioningConfiguration>')
+  return lines.join('\n')
 }
 
 export function buildDeleteObjectsResult(deleted = [], errors = []) {

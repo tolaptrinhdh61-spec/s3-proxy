@@ -124,6 +124,46 @@ async function testResignRequestVirtualHostedStyle() {
   }
 }
 
+async function testResignRequestVirtualHostedWithPort() {
+  try {
+    const { resignRequest } = await import('../src/utils/sigv4.js')
+
+    const account = {
+      access_key_id: 'AKIATESTKEY123',
+      secret_key: 'testSecretKey456abcdef',
+      endpoint: 'http://127.0.0.1:9000',
+      region: 'us-east-1',
+      bucket: 'ignored-bucket-field',
+      addressing_style: 'virtual',
+    }
+
+    const { url, headers } = await resignRequest({
+      account,
+      method: 'GET',
+      path: '/mybucket/folder/object.txt',
+      headers: {
+        'x-amz-checksum-sha256': 'abc123',
+      },
+    })
+
+    if (!url.startsWith('http://mybucket.127.0.0.1:9000/')) {
+      throw new Error(`Virtual-hosted URL with port wrong: ${url}`)
+    }
+
+    if (headers.host !== 'mybucket.127.0.0.1:9000') {
+      throw new Error(`Virtual-hosted host with port wrong: ${headers.host}`)
+    }
+
+    if (headers.authorization.includes('x-amz-checksum-sha256')) {
+      throw new Error(`SignedHeaders should not include x-amz-checksum-sha256: ${headers.authorization}`)
+    }
+
+    ok('resignRequest virtual-hosted style giu port va loai checksum headers khi sign')
+  } catch (err) {
+    fail('resignRequest virtual-hosted style with port', err)
+  }
+}
+
 // ─── Test: withRetry success after 2 fails ───────────────────────────────────
 
 async function testWithRetryPass() {
@@ -209,6 +249,43 @@ async function testBuildErrorXml() {
   }
 }
 
+async function testListAndBucketXmlCompatibility() {
+  try {
+    const {
+      buildListBucketResult,
+      buildGetBucketLocationResult,
+      buildGetBucketVersioningResult,
+    } = await import('../src/utils/s3Xml.js')
+
+    const xml = buildListBucketResult('demo', [{ key: 'folder/a&b.txt', size: 1 }], {
+      prefix: 'folder/',
+      delimiter: '/',
+      encodingType: 'url',
+    })
+
+    if (!xml.includes('<EncodingType>url</EncodingType>')) {
+      throw new Error(`Missing EncodingType: ${xml}`)
+    }
+    if (!xml.includes('<Key>folder%2Fa%26b.txt</Key>')) {
+      throw new Error(`Key is not URL encoded: ${xml}`)
+    }
+
+    const locationXml = buildGetBucketLocationResult('')
+    if (!locationXml.includes('<LocationConstraint')) {
+      throw new Error(`Invalid location xml: ${locationXml}`)
+    }
+
+    const versioningXml = buildGetBucketVersioningResult('')
+    if (!versioningXml.includes('<VersioningConfiguration')) {
+      throw new Error(`Invalid versioning xml: ${versioningXml}`)
+    }
+
+    ok('s3Xml ho tro encoding-type=url va canned response cho location/versioning')
+  } catch (err) {
+    fail('s3Xml list encoding/location/versioning', err)
+  }
+}
+
 // ─── Test: sendAlert no-throw ─────────────────────────────────────────────────
 
 async function testSendAlert() {
@@ -232,9 +309,11 @@ async function main() {
 
   await testResignRequest()
   await testResignRequestVirtualHostedStyle()
+  await testResignRequestVirtualHostedWithPort()
   await testWithRetryPass()
   await testWithRetryNo4xx()
   await testBuildErrorXml()
+  await testListAndBucketXmlCompatibility()
   await testSendAlert()
 
   console.log('─'.repeat(60))

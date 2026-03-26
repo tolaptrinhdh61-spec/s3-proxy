@@ -1,6 +1,1 @@
-[2026-03-26 17:05] (fix): xu ly follow-up critical sau audit tong the
-
-- sua race delete: khong xoa cache som truoc khi upstream DELETE hoan tat
-- them retry metadata HEAD sau complete multipart de tranh false 500
-- sua deactivateMissingAccounts([]) thanh no-op, tranh tat het account
-- bo sung test regression va don dep changelog bi duplicate
+[2026-03-26 18:20] chore: complete follow-up checklist (.opushforce.message + CHANGE_LOGS* prepended)

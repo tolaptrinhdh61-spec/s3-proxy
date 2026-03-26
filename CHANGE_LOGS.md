@@ -1,3 +1,17 @@
+## [2026-03-26 18:20] — Follow-up review: log compliance & release note sync
+
+**Loại:** chore  
+**Tóm tắt yêu cầu:** xử lý góp ý sau PR trước và hoàn tất checklist release artifacts  
+**Nội dung thay đổi:**
+
+- Cập nhật `.opushforce.message` theo nội dung PR mới nhất để đồng bộ thông điệp push/release.
+- Append entry mới lên đầu `CHANGE_LOGS.md` để ghi nhận đợt follow-up review.
+- Append entry mới lên đầu `CHANGE_LOGS_USER.md` theo góc nhìn user-facing.
+
+**Ghi chú kỹ thuật:** đây là cập nhật mang tính vận hành/tài liệu phát hành, không thay đổi logic runtime.
+
+---
+
 ## [2026-03-26 17:05] — Fix critical follow-up sau audit (delete race, multipart complete, account deactivation)
 
 **Loại:** fix  
