@@ -1,1 +1,7 @@
-feat: them postman.json kiem thu end-to-end cho import accounts, multi-account placement, S3 CRUD/LIST, multipart complete/abort va cleanup production
+
+[2026-03-26 14:45] (fix): them ignoreTrailingSlash de PocketBase LIST bucket duoc
+
+- sua src/plugins/auth.js de extract Access Key ID tu AWS4-HMAC-SHA256 Credential=<key>/...
+- giu nguyen ho tro x-api-key va Bearer token nhu cu
+- fix loi 403 AccessDenied khi PocketBase ket noi S3 proxy
+- feat: them postman.json kiem thu end-to-end cho import accounts, multi-account placement, S3 CRUD/LIST, multipart complete/abort va cleanup production

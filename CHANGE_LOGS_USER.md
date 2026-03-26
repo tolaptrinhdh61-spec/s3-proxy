@@ -1,3 +1,11 @@
+## [2026-03-26 14:30] — PocketBase không kết nối được S3 proxy
+
+**Yêu cầu gốc của user:** PocketBase báo lỗi "Failed to establish S3 connection" và log cho thấy 403 AccessDenied khi test S3 từ Settings  
+**Kết quả thực hiện:** sửa `src/plugins/auth.js` để hỗ trợ AWS SigV4 Authorization header mà PocketBase gửi lên  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 13:48] — Tạo Postman collection để test production
 
 **Yêu cầu gốc của user:** tạo `postman.json` để kiểm thử toàn bộ luồng nghiệp vụ và dùng làm tài liệu test trên môi trường production  
@@ -37,23 +45,27 @@
 **Trạng thái:** ✅ Hoàn thành
 
 ---
+
 ## [2026-03-26 08:34] — Sửa các lỗi còn lại để project chạy/test được
 
 **Yêu cầu gốc của user:** "tôi đã tạo lại, kiểm tra lại và xử lý các phần còn lại giúp tôi"  
 **Kết quả thực hiện:**
+
 - Kiểm tra lại toàn bộ trạng thái sau khi `src/config.js` đã được tạo lại
 - Sửa lỗi bootstrap khiến `src/index.js` không boot được và loại bỏ dependency `@fastify/close-grace` không tồn tại
 - Sửa các lỗi runtime ở route S3: upload retry, GET stream response, LIST object, lookup account, multipart flow, parser cho binary upload
 - Sửa lớp storage/account pool để reload state cục bộ ổn định hơn và quota poll không làm lệch state in-memory
 - Cập nhật `package.json`, tạo `package-lock.json`, thêm test script và bổ sung `test/server.test.js`
 - Chạy lại kiểm chứng local: `npm test` pass, smoke boot entrypoint thành công với env giả lập  
-**Trạng thái:** ✅ Hoàn thành
+  **Trạng thái:** ✅ Hoàn thành
 
 ---
+
 ## [2025-03-25 12:00] — Làm tiếp Task 4+5+6 (Utilities, Routes, Bootstrap)
 
 **Yêu cầu gốc của user:** "Đọc codebase, làm tiếp task03 giúp tôi" — T3 đã xong, tiếp tục T4+T5+T6  
 **Kết quả thực hiện:**
+
 - Tạo `src/utils/retry.js` — withRetry exponential backoff
 - Tạo `src/utils/s3Xml.js` — S3 XML builders
 - Tạo `src/utils/sigv4.js` — resignRequest + proxyRequest (undici)
@@ -66,7 +78,7 @@
 - Tạo `src/index.js` — 12-bước bootstrap hoàn chỉnh
 - Tạo `test/utils.test.js` — T4 test suite
 - Cập nhật `package.json` — thêm fastify-plugin, @aws-crypto/sha256-js  
-**Trạng thái:** ✅ Hoàn thành
+  **Trạng thái:** ✅ Hoàn thành
 
 ---
 
@@ -74,8 +86,9 @@
 
 **Yêu cầu gốc của user:** "Continue" — tiếp tục từ T3 Storage Layer  
 **Kết quả thực hiện:**
+
 - Tạo `src/db.js`, `src/cache.js`, `src/accountPool.js`, `src/quotaPoller.js`, `test/storage.test.js`  
-**Trạng thái:** ✅ Hoàn thành
+  **Trạng thái:** ✅ Hoàn thành
 
 ---
 
@@ -83,9 +96,8 @@
 
 **Yêu cầu gốc của user:** "Đọc Instructions, codebase, làm tiếp Task2 giúp tôi"  
 **Kết quả thực hiện:**
+
 - Tạo `src/firebase.js`, `database.rules.json`, `test/firebase.test.js`, scaffold project  
-**Trạng thái:** ✅ Hoàn thành
+  **Trạng thái:** ✅ Hoàn thành
 
 ---
-
-

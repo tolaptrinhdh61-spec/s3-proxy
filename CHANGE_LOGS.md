@@ -1,3 +1,27 @@
+## [2026-03-26 14:45] — Fix trailing slash bucket URL cho PocketBase
+
+**Loại:** fix  
+**Tóm tắt yêu cầu:** PocketBase gửi LIST request dạng `/bucket/?list-type=2` (có trailing slash), Fastify không match route `GET /:bucket` nên trả 404  
+**Nội dung thay đổi:**
+
+- File `src/index.js`: thêm `ignoreTrailingSlash: true` vào Fastify init options. Fastify sẽ tự normalize `/bucket/` thành `/bucket` trước khi route matching.
+
+**Ghi chú kỹ thuật:** PocketBase dùng AWS SDK, SDK tự thêm trailing slash vào bucket URL khi gọi ListObjectsV2. Option `ignoreTrailingSlash` là cách chuẩn của Fastify để xử lý trường hợp này, không cần thêm route mirror.
+
+---
+
+## [2026-03-26 14:30] — Fix auth PocketBase AWS SigV4
+
+**Loại:** fix  
+**Tóm tắt yêu cầu:** PocketBase kết nối S3 proxy bị lỗi 403 AccessDenied vì proxy không hiểu AWS SigV4 Authorization header  
+**Nội dung thay đổi:**
+
+- File `src/plugins/auth.js`: thêm hàm `extractApiKey()` để parse 3 format xác thực: `x-api-key`, `Authorization: Bearer`, và `Authorization: AWS4-HMAC-SHA256 Credential=<key>/...`. Trước đây chỉ hỗ trợ 2 format đầu, dẫn đến PocketBase (dùng AWS SDK gửi SigV4) bị từ chối.
+
+**Ghi chú kỹ thuật:** PocketBase dùng AWS SDK để kết nối S3, SDK tự động ký request theo chuẩn SigV4 với Access Key ID là `PROXY_API_KEY`. Header Authorization có dạng `AWS4-HMAC-SHA256 Credential=<accessKeyId>/<date>/<region>/s3/aws4_request, SignedHeaders=..., Signature=...`. Fix này extract phần `accessKeyId` ra và so sánh với `PROXY_API_KEY`.
+
+---
+
 ## [2026-03-26 13:48] — Them Postman collection kiem thu end-to-end cho production
 
 **Loại:** feat  
@@ -66,6 +90,7 @@
 **Loại:** feat  
 **Tóm tắt yêu cầu:** upgrade metadata from routing helper to logical control plane, add metadata-backed list, reconciler, and docs updates  
 **Nội dung thay đổi:**
+
 - File `src/db.js`: mở rộng bảng `routes` thành unified metadata table với tombstone, `backend_key`, `sync_state`, `reconcile_status`, migration idempotent, và helper giao dịch cho upload/delete/reconciliation.
 - File `src/routes/s3.js`: thay PUT/GET/HEAD/DELETE/LIST sang metadata-first flow, ListObjectsV2 từ SQLite, backend key namespacing cho write mới, delete an toàn bằng `DELETING` -> `DELETED`.
 - File `src/reconciler.js`: thêm background reconciler quét inventory backend, đánh dấu drift, auto-heal an toàn, flush pending RTDB sync, và không làm crash process.
@@ -80,11 +105,13 @@
 - File `test/storage.test.js`, `test/server.test.js`: cập nhật test theo metadata commit transaction, tombstone, pagination, delimiter, và metrics mới.
 
 **Ghi chú kỹ thuật:**
+
 - Migration giữ nguyên bảng `routes` và mở rộng nó thành unified metadata table để không cần tách dữ liệu routing/listing sang bảng mới.
 - Write mới dùng `backend_key` dạng `<logical-bucket>/<object-key>`; row cũ được migrate in place và giữ tương thích qua `backend_key` cũ/default.
 - RTDB sync có thể eventual nếu remote tạm lỗi; row sẽ giữ `PENDING_SYNC` và được background flusher gửi lại.
 
 ---
+
 ## [2026-03-26 08:34] — Fix Bootstrap, Runtime, Test Coverage
 
 **Loại:** fix  
@@ -101,11 +128,13 @@
 - File `package.json`, `package-lock.json`: thêm script `test`, khóa dependency tree bằng `npm install`, bỏ dependency `@fastify/close-grace` không hợp lệ
 
 **Ghi chú kỹ thuật:**
+
 - `npm test` pass toàn bộ suite local
 - `node src/index.js` smoke boot pass với env giả lập và SQLite local
 - `test/firebase.test.js` chưa chạy vì cần Firebase RTDB thật
 
 ---
+
 ## [2025-03-25 12:00] — T4+T5+T6: Utilities, Routes, Bootstrap
 
 **Loại:** feat  
@@ -126,6 +155,7 @@
 - File `package.json`: thêm fastify-plugin, @aws-crypto/sha256-js
 
 **Ghi chú kỹ thuật:**
+
 - sigv4.js dùng UNSIGNED-PAYLOAD để tránh buffer streaming PUT body — bắt buộc cho file lớn
 - s3Routes dùng `request.raw` (Node IncomingMessage) cho body stream, không dùng parsed body
 - RTDB listener auto-reconnect với exponential backoff 1s→60s max
@@ -159,5 +189,3 @@
 - File `test/firebase.test.js`: 6 test cases theo checklist T2
 
 ---
-
-
