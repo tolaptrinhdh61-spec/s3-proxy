@@ -5,7 +5,7 @@ x-proxy-common: &proxy-common
   restart: unless-stopped
   env_file: .env
   volumes:
-    - proxy-data:/app/data   # shared SQLite volume across replicas (WAL mode supports concurrent access)
+    - proxy-data:/app/data
   networks:
     - proxy-net
 

@@ -1,0 +1,194 @@
+/**
+ * test/utils.test.js
+ * T4 verification — Utilities tests.
+ *
+ * Usage:
+ *   PROXY_API_KEY=test \
+ *   FIREBASE_RTDB_URL=https://dummy.firebaseio.com \
+ *   FIREBASE_DB_SECRET=dummy \
+ *   SQLITE_PATH=./data/test-utils.db \
+ *   node test/utils.test.js
+ *
+ * Expected output:
+ *   ✅ resignRequest tạo header Authorization dạng AWS4-HMAC-SHA256
+ *   ✅ withRetry: fn fail 2 lần rồi pass → gọi đúng 3 lần
+ *   ✅ withRetry: fn trả 404 → không retry, throw ngay
+ *   ✅ buildErrorXml('NoSuchKey','msg','req1') → valid XML có <Code>NoSuchKey</Code>
+ *   ✅ sendAlert({ event:'storage_full'}) → không throw dù WEBHOOK_ALERT_URL=''
+ */
+
+import { mkdirSync } from 'fs'
+
+process.env.SQLITE_PATH = './data/test-utils-dummy.db'
+mkdirSync('./data', { recursive: true })
+
+let passed = 0
+let failed = 0
+
+function ok(label) {
+  console.log(`✅ ${label}`)
+  passed++
+}
+
+function fail(label, err) {
+  console.error(`❌ ${label}`)
+  console.error(`   ${err?.message || err}`)
+  failed++
+}
+
+// ─── Test: resignRequest ──────────────────────────────────────────────────────
+
+async function testResignRequest() {
+  try {
+    const { resignRequest } = await import('../src/utils/sigv4.js')
+
+    const account = {
+      access_key_id: 'AKIATESTKEY123',
+      secret_key:    'testSecretKey456abcdef',
+      endpoint:      'https://testproject.supabase.co/storage/v1/s3',
+      region:        'ap-southeast-1',
+      bucket:        'test-bucket',
+    }
+
+    const { url, headers } = await resignRequest({
+      account,
+      method:  'PUT',
+      path:    '/test-bucket/foo/bar.txt',
+      headers: {
+        'content-type':   'text/plain',
+        'content-length': '11',
+      },
+    })
+
+    if (!headers['authorization'] || !headers['authorization'].startsWith('AWS4-HMAC-SHA256')) {
+      throw new Error(`Authorization header missing or wrong format: ${headers['authorization']}`)
+    }
+
+    if (!url.startsWith('https://testproject.supabase.co')) {
+      throw new Error(`URL wrong: ${url}`)
+    }
+
+    ok(`resignRequest tạo header Authorization dạng AWS4-HMAC-SHA256`)
+  } catch (err) {
+    fail('resignRequest Authorization header', err)
+  }
+}
+
+// ─── Test: withRetry success after 2 fails ───────────────────────────────────
+
+async function testWithRetryPass() {
+  try {
+    const { withRetry } = await import('../src/utils/retry.js')
+
+    let callCount = 0
+    let retryCount = 0
+
+    const result = await withRetry(
+      async () => {
+        callCount++
+        if (callCount < 3) {
+          const err = new Error('temporary error')
+          err.statusCode = 503
+          throw err
+        }
+        return 'success'
+      },
+      {
+        maxAttempts: 3,
+        baseDelayMs: 10,
+        onRetry: (attempt) => { retryCount++ },
+      }
+    )
+
+    if (result === 'success' && callCount === 3 && retryCount === 2) {
+      ok(`withRetry: fn fail 2 lần rồi pass → gọi đúng 3 lần`)
+    } else {
+      fail('withRetry retry logic', new Error(`callCount=${callCount}, retryCount=${retryCount}, result=${result}`))
+    }
+  } catch (err) {
+    fail('withRetry retry logic', err)
+  }
+}
+
+// ─── Test: withRetry no retry on 404 ─────────────────────────────────────────
+
+async function testWithRetryNo4xx() {
+  try {
+    const { withRetry } = await import('../src/utils/retry.js')
+
+    let callCount = 0
+
+    try {
+      await withRetry(
+        async () => {
+          callCount++
+          const err = new Error('not found')
+          err.statusCode = 404
+          throw err
+        },
+        { maxAttempts: 3, baseDelayMs: 10 }
+      )
+      fail('withRetry: fn trả 404 → không retry', new Error('Should have thrown'))
+    } catch (err) {
+      if (err.statusCode === 404 && callCount === 1) {
+        ok(`withRetry: fn trả 404 → không retry, throw ngay`)
+      } else {
+        fail('withRetry: fn trả 404 → không retry', new Error(`callCount=${callCount}, statusCode=${err.statusCode}`))
+      }
+    }
+  } catch (err) {
+    fail('withRetry no retry on 404', err)
+  }
+}
+
+// ─── Test: buildErrorXml ──────────────────────────────────────────────────────
+
+async function testBuildErrorXml() {
+  try {
+    const { buildErrorXml } = await import('../src/utils/s3Xml.js')
+
+    const xml = buildErrorXml('NoSuchKey', 'The key does not exist', 'req1')
+
+    if (!xml.includes('<?xml') || !xml.includes('<Code>NoSuchKey</Code>') || !xml.includes('req1')) {
+      throw new Error(`XML invalid: ${xml}`)
+    }
+
+    ok(`buildErrorXml('NoSuchKey','msg','req1') → valid XML có <Code>NoSuchKey</Code>`)
+  } catch (err) {
+    fail('buildErrorXml', err)
+  }
+}
+
+// ─── Test: sendAlert no-throw ─────────────────────────────────────────────────
+
+async function testSendAlert() {
+  try {
+    const { sendAlert } = await import('../src/utils/webhook.js')
+
+    // Should not throw even if WEBHOOK_ALERT_URL is empty
+    sendAlert({ event: 'storage_full', detail: 'test alert' })
+    ok(`sendAlert({ event:'storage_full'}) → không throw dù WEBHOOK_ALERT_URL=''`)
+  } catch (err) {
+    fail('sendAlert no-throw', err)
+  }
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+async function main() {
+  console.log('─'.repeat(60))
+  console.log('T4 — Utilities Tests')
+  console.log('─'.repeat(60))
+
+  await testResignRequest()
+  await testWithRetryPass()
+  await testWithRetryNo4xx()
+  await testBuildErrorXml()
+  await testSendAlert()
+
+  console.log('─'.repeat(60))
+  console.log(`Results: ${passed} passed, ${failed} failed`)
+  process.exit(failed > 0 ? 1 : 0)
+}
+
+main()

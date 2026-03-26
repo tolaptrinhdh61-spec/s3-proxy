@@ -1,40 +1,53 @@
+## [2025-03-25 12:00] — T4+T5+T6: Utilities, Routes, Bootstrap
+
+**Loại:** feat  
+**Tóm tắt yêu cầu:** Implement T4 (Utilities), T5 (Fastify Routes), T6 (Bootstrap)  
+**Nội dung thay đổi:**
+
+- File `src/utils/retry.js`: withRetry exponential backoff (100/200/400ms), chỉ retry 5xx + network errors, không retry 4xx
+- File `src/utils/s3Xml.js`: 5 builder functions — buildErrorXml, buildListBucketResult, buildInitiateMultipartUploadResult, buildCompleteMultipartUploadResult, buildDeleteObjectsResult
+- File `src/utils/sigv4.js`: resignRequest (strip AWS headers, re-sign với account creds), proxyRequest (undici, UNSIGNED-PAYLOAD cho streaming PUT)
+- File `src/utils/webhook.js`: sendAlert fire-and-forget, 5s timeout với AbortController, không throw
+- File `src/plugins/auth.js`: Fastify plugin fp() validate x-api-key + Bearer token, 403 XML on mismatch
+- File `src/plugins/errorHandler.js`: global setErrorHandler + setNotFoundHandler, S3 XML với status code mapping
+- File `src/routes/health.js`: GET /health trả JSON đầy đủ, 503 nếu cả RTDB và SQLite chết
+- File `src/routes/metrics.js`: GET /metrics Prometheus format, 10 metrics, collectDefaultMetrics
+- File `src/routes/s3.js`: PUT (upload+retry+fallback), GET (stream), HEAD, DELETE, LIST, multipart full flow
+- File `src/index.js`: 12-bước bootstrap, RTDB SSE listeners với exponential backoff reconnect, heartbeat 30s, graceful shutdown
+- File `test/utils.test.js`: 5 test cases T4 checklist
+- File `package.json`: thêm fastify-plugin, @aws-crypto/sha256-js
+
+**Ghi chú kỹ thuật:**
+- sigv4.js dùng UNSIGNED-PAYLOAD để tránh buffer streaming PUT body — bắt buộc cho file lớn
+- s3Routes dùng `request.raw` (Node IncomingMessage) cho body stream, không dùng parsed body
+- RTDB listener auto-reconnect với exponential backoff 1s→60s max
+- accounts listener debounced 2s để tránh thundering herd
+- heartbeat timer dùng `.unref()` để không block Node.js exit
+
+---
+
 ## [2025-03-25 11:00] — T3: Storage Layer
 
 **Loại:** feat  
 **Tóm tắt yêu cầu:** Implement T3 — Storage Layer: SQLite, LRU cache, Account Pool, Quota Poller  
 **Nội dung thay đổi:**
 
-- File `src/db.js`: SQLite init với WAL mode + NORMAL sync + 64MB cache; migrations idempotent (CREATE TABLE IF NOT EXISTS); 11 hàm: upsertAccount, getAllActiveAccounts, updateUsedBytes, setUsedBytesAbsolute, upsertRoute, getRoute, deleteRoute, getAllRoutes, countRoutes, upsertMultipartUpload, getMultipartUpload, deleteMultipartUpload
-- File `src/cache.js`: LRU wrapper dùng lru-cache v10; key=encodedKey, value={accountId,bucket,objectKey,sizeBytes}; export cacheGet/cacheSet/cacheDelete/cacheClear/cacheSize
-- File `src/accountPool.js`: StorageFullError class; selectAccountForUpload(sizeBytes, excludeIds) iterate sorted accounts check threshold; recordUpload/recordDelete sync SQLite + update in-memory + fire-and-forget RTDB patch; reloadAccountsFromRTDB pull RTDB → upsert SQLite → rebuild in-memory; getAccountsStats cho health endpoint
-- File `src/quotaPoller.js`: startQuotaPoller/stopQuotaPoller; ListObjectsV2 phân trang; discrepancy > 5% → setUsedBytesAbsolute; mọi lỗi đều catch + log, không crash; timer.unref() để không block exit
-- File `test/storage.test.js`: 8 test cases bao gồm tất cả điều kiện T3 checklist
-
-**Ghi chú kỹ thuật:**  
-- accountPool load từ SQLite tại module import time → cần gọi reloadAccountsFromRTDB() ở startup để sync RTDB data  
-- recordUpload/recordDelete dùng `Promise.resolve().then(() => rtdbPatch(...))` để push RTDB off event loop (fire-and-forget, không block response)  
-- quotaPoller dùng `timer.unref()` để Node.js process có thể exit clean khi không còn request  
-- test/storage.test.js override SQLITE_PATH trước khi import db.js để dùng test DB riêng biệt
+- File `src/db.js`: SQLite init với WAL mode, migrations idempotent, 11 query functions
+- File `src/cache.js`: LRU wrapper lru-cache v10, 5 functions
+- File `src/accountPool.js`: StorageFullError, selectAccountForUpload, recordUpload, recordDelete, reloadAccountsFromRTDB, getAccountsStats, getAccount
+- File `src/quotaPoller.js`: background S3 ListObjectsV2 poller, 5% threshold, never crashes, timer.unref()
+- File `test/storage.test.js`: 8 test cases theo checklist T3
 
 ---
 
 ## [2025-03-25 10:00] — T2: Firebase RTDB Layer
 
 **Loại:** feat  
-**Tóm tắt yêu cầu:** Implement T2 — Firebase RTDB layer dùng REST API + SSE, không dùng firebase-admin SDK  
+**Tóm tắt yêu cầu:** Implement T2 — Firebase RTDB layer dùng REST API + SSE  
 **Nội dung thay đổi:**
 
-- File `src/firebase.js`: 7 hàm export (rtdbGet, rtdbSet, rtdbPatch, rtdbDelete, rtdbPush, rtdbListen, rtdbBatchPatch); dùng fetch thuần + eventsource SSE; rtdbBatchPatch tự chunk theo RTDB_SYNC_BATCH_SIZE
-- File `database.rules.json`: Firebase RTDB security rules với `.indexOn` cho accounts, routes, instances
-- File `test/firebase.test.js`: 6 test case theo checklist T2 — set, get, patch, delete, listen (SSE), batchPatch 500 entries
-- File `src/config.js`: validated env config, frozen object, exit(1) nếu thiếu required vars (đã có từ T1)
-- File `src/index.js`: stub bootstrap (T6 sẽ implement đầy đủ)
-- Files scaffold: `package.json`, `.env.example`, `.gitignore`, `Dockerfile`, `docker-compose.yml`
-
-**Ghi chú kỹ thuật:**  
-- Dùng `eventsource` npm package cho SSE (Node.js không có native EventSource)  
-- Firebase REST auth: `?auth=FIREBASE_DB_SECRET` — legacy secret token, không cần service account JSON  
-- rtdbBatchPatch dùng multi-path PATCH tới root `/` — Firebase nhận object dạng `{ "/routes/key": data }`  
-- rtdbListen initial event: Firebase SSE gửi `put` với `path: "/"` ngay khi connect
+- File `src/firebase.js`: 7 hàm export, dùng fetch thuần + eventsource SSE, auto-chunk rtdbBatchPatch
+- File `database.rules.json`: Firebase RTDB security rules với .indexOn
+- File `test/firebase.test.js`: 6 test cases theo checklist T2
 
 ---
