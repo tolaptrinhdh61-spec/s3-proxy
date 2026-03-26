@@ -79,6 +79,50 @@ Tạo một record tại `/accounts/{accountId}` với định dạng:
 - `active`: `true` để cho phép nhận upload mới
 - `addedAt`: timestamp mili-giây
 
+### 3.4. Dùng API để thêm/import account
+
+Ngoài cách ghi tay vào RTDB, proxy hiện hỗ trợ API quản trị để thêm một account hoặc import nhiều account cùng lúc.
+
+Các endpoint:
+
+- `GET /admin/accounts`
+- `POST /admin/accounts`
+- `POST /admin/accounts/import`
+
+Tất cả đều yêu cầu:
+
+- header `x-api-key: <PROXY_API_KEY>`
+
+Ví dụ thêm 1 account:
+
+```bash
+curl -X POST "http://localhost:3000/admin/accounts" \
+  -H "x-api-key: your-proxy-api-key" \
+  -H "Content-Type: application/json" \
+  --data-binary "{\"accountId\":\"acc02\",\"accessKeyId\":\"key-02\",\"secretAccessKey\":\"secret-02\",\"endpoint\":\"https://project.supabase.co/storage/v1/s3\",\"region\":\"ap-southeast-1\",\"bucket\":\"bucket-02\",\"quotaBytes\":5368709120,\"usedBytes\":0,\"active\":true}"
+```
+
+Ví dụ import nhiều account từ file JSON:
+
+```bash
+curl -X POST "http://localhost:3000/admin/accounts/import" \
+  -H "x-api-key: your-proxy-api-key" \
+  -H "Content-Type: application/json" \
+  --data-binary @accounts-import.json
+```
+
+API import hỗ trợ các dạng body:
+
+- một object account đơn
+- `{ "accounts": [ ... ] }`
+- `{ "accounts": { "acc01": { ... }, "acc02": { ... } } }`
+
+Điểm hữu ích:
+
+- Có thể import trực tiếp từ JSON export kiểu RTDB nếu phần account nằm dưới key `accounts`
+- Sau khi import, proxy sẽ lưu SQLite cục bộ và đồng bộ lên RTDB
+- `GET /admin/accounts` trả danh sách account hiện có nhưng không trả secret key
+
 ## 4. Cấu hình biến môi trường
 
 Từ thư mục gốc của repo:

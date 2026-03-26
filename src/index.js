@@ -27,6 +27,7 @@ import authPlugin from './plugins/auth.js'
 import errorHandler from './plugins/errorHandler.js'
 import healthRoutes from './routes/health.js'
 import metricsRoutes from './routes/metrics.js'
+import accountRoutes from './routes/accounts.js'
 import s3Routes from './routes/s3.js'
 
 const log = pino({
@@ -280,6 +281,7 @@ async function bootstrap() {
 
   await fastify.register(healthRoutes)
   await fastify.register(metricsRoutes)
+  await fastify.register(accountRoutes)
   await fastify.register(s3Routes, { prefix: '/' })
 
   fastify.addHook('onSend', async (_request, reply) => {

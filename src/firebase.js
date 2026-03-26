@@ -6,8 +6,16 @@
 import EventSource from 'eventsource'
 import config from './config.js'
 
+function normalizePath(path) {
+  const value = String(path ?? '').trim()
+  if (!value || value === '/') return '/'
+
+  const normalized = value.startsWith('/') ? value : `/${value}`
+  return normalized.replace(/\/+$/, '')
+}
+
 function buildUrl(path) {
-  const cleanPath = path.replace(/\/+$/, '')
+  const cleanPath = normalizePath(path)
   return `${config.FIREBASE_RTDB_URL}${cleanPath}.json?auth=${config.FIREBASE_DB_SECRET}`
 }
 
@@ -62,7 +70,7 @@ export async function rtdbPush(path, value) {
 }
 
 export function rtdbListen(path, onData, onError) {
-  const cleanPath = path.replace(/\/+$/, '')
+  const cleanPath = normalizePath(path)
   const url = `${config.FIREBASE_RTDB_URL}${cleanPath}.json?auth=${config.FIREBASE_DB_SECRET}`
 
   const es = new EventSource(url, {

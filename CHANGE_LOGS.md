@@ -1,3 +1,20 @@
+## [2026-03-26 13:21] — Them admin API de them va import nhieu accounts
+
+**Loại:** feat  
+**Tóm tắt yêu cầu:** thêm API để lưu thêm backend accounts, hỗ trợ import nhiều account cùng lúc và dùng được với các payload export JSON  
+**Nội dung thay đổi:**
+
+- File `src/routes/accounts.js`: them admin routes `GET /admin/accounts`, `POST /admin/accounts`, `POST /admin/accounts/import`; ho tro upsert 1 account, import nhieu account, validate payload, sync SQLite + RTDB, va khong tra ve secret key trong response.
+- File `src/index.js`: dang ky `accountRoutes` vao Fastify bootstrap.
+- File `src/firebase.js`: sua normalize path cho RTDB REST/SSE, dac biet la root patch `/.json`, de `rtdbBatchPatch('/')` hoat dong dung cho import nhieu records.
+- File `test/accounts-api.test.js`: them integration test voi fake RTDB de kiem tra import 1 account, bulk import tu map/export shape, GET list accounts, va validation 400.
+- File `README.md`, `deploy.vi.md`: bo sung tai lieu va vi du curl cho accounts admin API.
+- File `package.json`: them script `test:accounts-api` va noi suite moi vao `npm test`.
+
+**Ghi chú kỹ thuật:** accounts API ghi vao SQLite truoc de node hien tai dung duoc ngay, sau do batch patch len RTDB de cac instance khac nhan thay doi. Payload import ho tro 3 dang chinh: object don, `{ "accounts": [ ... ] }`, va `{ "accounts": { "acc01": { ... } } }`.
+
+---
+
 ## [2026-03-26 12:01] — Them kich ban kiem thu multi-account va luong S3 thong dung
 
 **Loại:** feat  

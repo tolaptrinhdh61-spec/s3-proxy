@@ -1,5 +1,5 @@
-[2026-03-26 12:01] (chore): them kich ban kiem thu multi-account
+[2026-03-26 13:21] (feat): them accounts admin api
 
-- Them test/multi-account.test.js de kiem thu phan bo object qua nhieu account, threshold switch, overwrite, GET, HEAD, LIST, DELETE
-- Them docs/multi-account-test-scenarios.vi.md mo ta cac kich ban va cach chay npm run test:multi-account
-- Cap nhat package.json de noi test moi vao npm test
+- Them GET /admin/accounts, POST /admin/accounts, POST /admin/accounts/import de them 1 hoac nhieu account
+- Ho tro import tu account object, array, map theo accountId, va JSON export co key accounts
+- Them test/accounts-api.test.js, cap nhat README.md va deploy.vi.md, sua rtdbBatchPatch root path cho import nhieu account

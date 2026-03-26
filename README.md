@@ -313,6 +313,95 @@ Write `/accounts/{accountId}` like:
 
 The proxy listens to `/accounts` via RTDB SSE and reloads without restart.
 
+### Admin accounts API
+
+The proxy also exposes authenticated admin APIs for adding or importing backend accounts without editing RTDB manually.
+
+All admin account routes require the same API key as the S3 proxy:
+
+- header: `x-api-key: <PROXY_API_KEY>`
+
+Available routes:
+
+- `GET /admin/accounts`
+- `POST /admin/accounts`
+- `POST /admin/accounts/import`
+
+Supported request body shapes for `POST`:
+
+Single account:
+
+```json
+{
+  "accountId": "acc02",
+  "accessKeyId": "your-access-key",
+  "secretAccessKey": "your-secret-key",
+  "endpoint": "https://project.supabase.co/storage/v1/s3",
+  "region": "ap-southeast-1",
+  "bucket": "physical-backend-bucket",
+  "quotaBytes": 5368709120,
+  "usedBytes": 0,
+  "active": true
+}
+```
+
+Bulk import as array:
+
+```json
+{
+  "accounts": [
+    {
+      "accountId": "acc02",
+      "accessKeyId": "key-02",
+      "secretAccessKey": "secret-02",
+      "endpoint": "https://project-02.supabase.co/storage/v1/s3",
+      "region": "ap-southeast-1",
+      "bucket": "bucket-02"
+    },
+    {
+      "accountId": "acc03",
+      "accessKeyId": "key-03",
+      "secretAccessKey": "secret-03",
+      "endpoint": "https://project-03.supabase.co/storage/v1/s3",
+      "region": "ap-southeast-1",
+      "bucket": "bucket-03"
+    }
+  ]
+}
+```
+
+Bulk import from an RTDB export-style object:
+
+```json
+{
+  "accounts": {
+    "acc02": {
+      "accessKeyId": "key-02",
+      "secretAccessKey": "secret-02",
+      "endpoint": "https://project-02.supabase.co/storage/v1/s3",
+      "region": "ap-southeast-1",
+      "bucket": "bucket-02"
+    },
+    "acc03": {
+      "accessKeyId": "key-03",
+      "secretAccessKey": "secret-03",
+      "endpoint": "https://project-03.supabase.co/storage/v1/s3",
+      "region": "ap-southeast-1",
+      "bucket": "bucket-03"
+    }
+  }
+}
+```
+
+Example:
+
+```bash
+curl -X POST http://localhost:3000/admin/accounts/import \
+  -H "x-api-key: $PROXY_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data @accounts-import.json
+```
+
 ---
 
 ## Environment Variables

@@ -1,3 +1,11 @@
+## [2026-03-26 13:21] — Them API de luu va import nhieu accounts
+
+**Yêu cầu gốc của user:** them API de luu them accounts, va co the import nhieu account cung luc  
+**Kết quả thực hiện:** them `GET /admin/accounts`, `POST /admin/accounts`, `POST /admin/accounts/import`; ho tro import tu object don, array, map theo `accountId`, va JSON export co key `accounts`; cap nhat tai lieu trong `README.md` va `deploy.vi.md`; them `test/accounts-api.test.js`; sua root RTDB patch trong `src/firebase.js`; chay `npm test` pass toan bo.  
+**Trạng thái:** ✅ Hoàn thành
+
+---
+
 ## [2026-03-26 12:01] — Them kich ban kiem thu nhieu account va cac luong S3 co ban
 
 **Yêu cầu gốc của user:** viet cac kich ban kiem thu de cau hinh nhieu account, kiem tra viec luu co chuyen qua account khac, va thu cac luong thuong gap nhu tao, get, xoa  
